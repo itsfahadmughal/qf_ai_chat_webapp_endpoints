@@ -1,0 +1,172 @@
+generator client {
+  provider = "prisma-client-js"
+  // output   = "../src/generated/prisma"  // (optional) if you want custom path
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Provider {
+  openai
+  deepseek
+  perplexity
+}
+
+model Hotel {
+  id                      String                    @id @default(cuid())
+  name                    String
+  isActive                Boolean                   @default(true)
+  createdAt               DateTime                  @default(now())
+  users                   User[]
+  providers               HotelProviderToggle[]
+  conversations           Conversation[]
+  prompts                 Prompt[]
+  HotelProviderCredential HotelProviderCredential[]
+}
+
+model HotelProviderToggle {
+  id           String   @id @default(cuid())
+  hotelId      String
+  hotel        Hotel    @relation(fields: [hotelId], references: [id])
+  provider     Provider
+  isEnabled    Boolean  @default(true)
+  defaultModel String?
+
+  @@unique([hotelId, provider])
+}
+
+model User {
+  id                 String               @id @default(cuid())
+  email              String               @unique
+  passwordHash       String
+  role               String               @default("reader") // or "author", "admin"
+  isActive           Boolean              @default(true)
+  hotelId            String
+  hotel              Hotel                @relation(fields: [hotelId], references: [id])
+  createdAt          DateTime             @default(now())
+  conversations      Conversation[]
+  prompts            Prompt[]
+  preference         UserPreference?      @relation("UserPreference_user")
+  PasswordResetToken PasswordResetToken[]
+  EmailOtp           EmailOtp[]
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  title     String?
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  hotelId   String
+  hotel     Hotel     @relation(fields: [hotelId], references: [id])
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  provider  Provider
+  model     String
+  archived  Boolean   @default(false)
+  messages  Message[]
+}
+
+model Message {
+  id               String       @id @default(cuid())
+  role             String // "system" | "user" | "assistant" | "tool"
+  content          String
+  createdAt        DateTime     @default(now())
+  conversationId   String
+  conversation     Conversation @relation(fields: [conversationId], references: [id])
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+}
+
+model PromptCategory {
+  id      String   @id @default(cuid())
+  name    String   @unique
+  prompts Prompt[]
+  // e.g. "SEO", "Support", matches the library filters in your PDF
+}
+
+model Prompt {
+  id         String          @id @default(cuid())
+  hotelId    String
+  hotel      Hotel           @relation(fields: [hotelId], references: [id])
+  authorId   String
+  author     User            @relation(fields: [authorId], references: [id])
+  title      String
+  body       String // the actual prompt text
+  categoryId String?
+  category   PromptCategory? @relation(fields: [categoryId], references: [id]) // relation
+  tags       String[]        @default([])
+  version    String? // e.g. "v1.2"
+  archived   Boolean         @default(false)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  @@index([hotelId, archived])
+}
+
+model UserPreference {
+  userId String @id
+  user   User   @relation("UserPreference_user", fields: [userId], references: [id])
+
+  // user-level provider settings (no A/B)
+  enabledProviders Provider[] @default([])
+  defaultProvider  Provider?
+
+  modelOpenAI     String?
+  modelDeepseek   String?
+  modelPerplexity String?
+
+  locale String?
+}
+
+model HotelProviderCredential {
+  id       String   @id @default(cuid())
+  hotelId  String
+  hotel    Hotel    @relation(fields: [hotelId], references: [id])
+  provider Provider
+
+  // AES-GCM payload
+  encKey Bytes // ciphertext
+  iv     Bytes // 12 bytes nonce
+  tag    Bytes // 16 bytes auth tag
+
+  baseUrl  String? // optional per-hotel override
+  label    String? // e.g. "Prod key - 2025-08"
+  last4    String // last 4 chars of the original key (for display)
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([hotelId, provider])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model EmailOtp {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  email      String
+  code       String
+  purpose    String    @default("generic")
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+  @@index([email, createdAt])
+}
