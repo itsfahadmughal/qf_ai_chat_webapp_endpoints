@@ -51,6 +51,7 @@ model User {
   preference         UserPreference?      @relation("UserPreference_user")
   PasswordResetToken PasswordResetToken[]
   EmailOtp           EmailOtp[]
+  MessageFeedback    MessageFeedback[]
 }
 
 model Conversation {
@@ -69,15 +70,16 @@ model Conversation {
 }
 
 model Message {
-  id               String       @id @default(cuid())
+  id               String            @id @default(cuid())
   role             String // "system" | "user" | "assistant" | "tool"
   content          String
-  createdAt        DateTime     @default(now())
+  createdAt        DateTime          @default(now())
   conversationId   String
-  conversation     Conversation @relation(fields: [conversationId], references: [id])
+  conversation     Conversation      @relation(fields: [conversationId], references: [id])
   promptTokens     Int?
   completionTokens Int?
   totalTokens      Int?
+  MessageFeedback  MessageFeedback[]
 }
 
 model PromptCategory {
@@ -169,4 +171,27 @@ model EmailOtp {
 
   @@index([userId, expiresAt])
   @@index([email, createdAt])
+}
+
+enum Reaction {
+  like
+  dislike
+}
+
+model MessageFeedback {
+  id        String  @id @default(cuid())
+  messageId String
+  message   Message @relation(fields: [messageId], references: [id])
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+
+  reaction  Reaction
+  reason    String? // optional quick reason e.g. "irrelevant", "incorrect"
+  comment   String? // optional free text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([messageId, userId]) // one reaction per user per message
+  @@index([messageId])
+  @@index([userId])
 }

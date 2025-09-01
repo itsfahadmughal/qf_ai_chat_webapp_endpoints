@@ -4,6 +4,7 @@ import { prisma } from "../db.js";
 import { z } from "zod";
 import { Providers } from "../providers/index.js";
 import { decryptSecret } from "../crypto/secrets.js";
+import { getPostReplySuggestions } from "../suggestions/engine.js";
 
 type ProviderName = "openai" | "deepseek" | "perplexity";
 
@@ -156,19 +157,36 @@ export async function chatRoutes(app: FastifyInstance) {
           }
         });
 
-    await prisma.message.createMany({
-      data: [
-        ...messages.map(m => ({ role: m.role, content: m.content, conversationId: conv.id })),
-        { role: "assistant", content: result.content, conversationId: conv.id }
-      ]
+    // store all user/tool messages first (if any)
+    if (messages.length) {
+      await prisma.message.createMany({
+        data: messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          conversationId: conv.id
+        }))
+      });
+    }
+
+    // create the assistant reply and capture its id
+    const assistantMessage = await prisma.message.create({
+      data: {
+        role: "assistant",
+        content: result.content,
+        conversationId: conv.id
+      }
     });
+
+    const nextSuggestions = getPostReplySuggestions(result.content || "", "en", 3);
 
     return {
       conversationId: conv.id,
+      assistantMessageId: assistantMessage.id,
       provider: chosenProvider,
       model: chosenModel,
       content: result.content,
-      usage: result.usage
+      usage: result.usage,
+      nextSuggestions
     };
   });
 

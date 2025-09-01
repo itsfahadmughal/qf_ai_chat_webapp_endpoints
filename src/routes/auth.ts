@@ -3,6 +3,7 @@ import { prisma } from "../db.js";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import crypto from "crypto";
+import { sendPasswordResetEmail } from "../lib/mailer.js";
 
 const RegisterSchema = z.object({
   email: z.string().email(),
@@ -123,6 +124,20 @@ export async function authRoutes(app: FastifyInstance) {
     // TODO: send email with token & code (Nodemailer / provider)
     console.log(`[DEV] Password reset token for ${email}: ${token}`);
     console.log(`[DEV] OTP code for ${email}: ${code}`);
+
+    // ✅ Send the email (don’t block overall flow on failures—log and still respond generic)
+    try {
+      await sendPasswordResetEmail({
+        to: email,
+        token,
+        code,
+        expiresAt,
+        otpExpires
+      });
+    } catch (err) {
+      console.error("[forgot] failed to send email:", err);
+      // Still return generic OK to avoid enumeration / UX leakage
+    }
 
     return {
       ok: true,
