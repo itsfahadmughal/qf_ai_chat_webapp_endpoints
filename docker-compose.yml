@@ -23,3 +23,4 @@ services:
       - db
 volumes:
   pgdata:
+    name: chatdb-pgdata
