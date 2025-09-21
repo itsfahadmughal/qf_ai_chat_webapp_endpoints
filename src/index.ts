@@ -11,6 +11,7 @@ import { settingsRoutes } from "./routes/settings.js";
 import { credentialRoutes } from "./routes/credentials.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { suggestionsRoutes } from "./routes/suggestions.js";
+import { mcpRoutes } from "./routes/mcp.js";
 
 const app = Fastify({ logger: true });
 
@@ -28,6 +29,7 @@ await settingsRoutes(app);
 await credentialRoutes(app);
 await feedbackRoutes(app);
 await suggestionsRoutes(app);
+await mcpRoutes(app);
 
 const port = Number(env.PORT || 3000);
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {

@@ -86,6 +86,21 @@ export async function authRoutes(app: FastifyInstance) {
     return { id: req.user.id, email: req.user.email };
   });
 
+  // NEW: Set/assign hotel to current user
+  app.put("/me/hotel", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const Body = z.object({ hotelId: z.string() }).parse(req.body ?? {});
+    const hotel = await prisma.hotel.findUnique({ where: { id: Body.hotelId } });
+    if (!hotel) return reply.code(404).send({ error: "Hotel not found" });
+    if (hotel.isActive === false) return reply.code(403).send({ error: "Hotel is inactive" });
+
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { hotelId: Body.hotelId },
+      select: { id: true, email: true, hotelId: true }
+    });
+    return updated;
+  });
+
   // --- Forgot Password ---
   app.post("/auth/forgot", async (req, reply) => {
     const { email } = ForgotSchema.parse(req.body ?? {});
@@ -125,7 +140,6 @@ export async function authRoutes(app: FastifyInstance) {
     console.log(`[DEV] Password reset token for ${email}: ${token}`);
     console.log(`[DEV] OTP code for ${email}: ${code}`);
 
-    // ✅ Send the email (don’t block overall flow on failures—log and still respond generic)
     try {
       await sendPasswordResetEmail({
         to: email,
