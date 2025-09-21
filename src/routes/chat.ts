@@ -5,7 +5,7 @@ import { z } from "zod";
 import { Providers } from "../providers/index.js";
 import { decryptSecret } from "../crypto/secrets.js";
 import { getPostReplySuggestions } from "../suggestions/engine.js";
-import { mcpManager } from "../mcp/manager.js";  // 👈 NEW
+import { mcpManager } from "../mcp/manager.js";
 
 type ProviderName = "openai" | "deepseek" | "perplexity";
 
@@ -21,9 +21,28 @@ const ChatBody = z.object({
   }).optional()
 });
 
+/** Adapt messages for a provider that doesn't accept role: "tool".
+ *  We mapped "tool" -> "system" so OpenAI/Deepseek/Perplexity won't reject the payload.
+ */
+function adaptMessagesForProvider(
+  provider: ProviderName,
+  msgs: Array<{ role: string; content: string }>
+) {
+  const mapToolToSystem = (m: { role: string; content: string }) =>
+    m.role === "tool" ? { role: "system", content: m.content } : m;
+
+  switch (provider) {
+    case "openai":
+    case "deepseek":
+    case "perplexity":
+      return msgs.map(mapToolToSystem);
+    default:
+      return msgs;
+  }
+}
+
 export async function chatRoutes(app: FastifyInstance) {
   app.post("/chat", { preHandler: app.authenticate }, async (req: any, reply) => {
-    // 👇 include tool in the parsed body
     const { conversationId, provider, model, messages, tool } = ChatBody.parse(req.body || {});
     if (!messages?.length) return reply.code(400).send({ error: "messages is required" });
 
@@ -126,8 +145,10 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     // 7.5) Optional MCP tool execution (pre-LLM)
+    // We'll add the tool result to the *chat context*, but send it to the provider as a "system" message (not "tool")
     let messagesForLLM = [...messages];
-    let toolText: string | undefined;
+    let toolTextForDB: string | undefined; // stored in DB as role "tool"
+    let toolContextForModel: string | undefined; // what the model actually sees
 
     if (tool) {
       const srv = await prisma.mCPServer.findFirst({
@@ -138,9 +159,18 @@ export async function chatRoutes(app: FastifyInstance) {
       const started = Date.now();
       try {
         const res = await mcpManager.callTool(tool.serverId, tool.name, tool.args);
-        toolText = res?.content?.[0]?.text ?? "";
-        messagesForLLM.push({ role: "tool", content: toolText });
+        const rawText = res?.content?.[0]?.text ?? "";
+        // a label helps the model understand what it is seeing
+        const labeled = `TOOL ${tool.name} RESULT:\n${rawText}`;
+        // trim very large tool output (optional safety)
+        const MAX_TOOL_CONTEXT = 4000;
+        toolTextForDB = labeled;
+        toolContextForModel = labeled.length > MAX_TOOL_CONTEXT ? labeled.slice(0, MAX_TOOL_CONTEXT) + "\n[truncated]" : labeled;
 
+        // Push as role "tool" for *our* in-memory list; we'll adapt before sending
+        messagesForLLM.push({ role: "tool", content: toolContextForModel });
+
+        // Log success
         await prisma.toolCallLog.create({
           data: {
             hotelId: hotelIdForPolicy,
@@ -149,7 +179,7 @@ export async function chatRoutes(app: FastifyInstance) {
             serverId: srv.id,
             toolName: tool.name,
             args: tool.args as any,
-            result: (() => { try { return JSON.parse(toolText!); } catch { return { text: toolText }; } })(),
+            result: (() => { try { return JSON.parse(rawText); } catch { return { text: rawText }; } })(),
             status: "ok",
             startedAt: new Date(started),
             finishedAt: new Date(),
@@ -176,13 +206,14 @@ export async function chatRoutes(app: FastifyInstance) {
       }
     }
 
-    // 8) Call provider  👈 now use messagesForLLM
+    // 8) Call provider — map any "tool" role messages to "system" so OpenAI/others accept them
     const p = Providers[chosenProvider];
     let result;
     try {
+      const adapted = adaptMessagesForProvider(chosenProvider, messagesForLLM);
       result = await p.chat({
         model: chosenModel,
-        messages: messagesForLLM,
+        messages: adapted,
         apiKey: apiKeyOverride,
         baseURL: baseURLOverride
       });
@@ -194,11 +225,7 @@ export async function chatRoutes(app: FastifyInstance) {
     const conv = existingConv
       ? await prisma.conversation.update({
           where: { id: existingConv.id },
-          data: {
-            provider: chosenProvider as any,
-            model: chosenModel,
-            updatedAt: new Date()
-          }
+          data: { provider: chosenProvider as any, model: chosenModel, updatedAt: new Date() }
         })
       : await prisma.conversation.create({
           data: {
@@ -210,9 +237,9 @@ export async function chatRoutes(app: FastifyInstance) {
           }
         });
 
-    // store user + (optional) tool messages first
+    // Store inbound user + (optional) tool messages exactly as they happened
     const inbound = [...messages];
-    if (toolText) inbound.push({ role: "tool", content: toolText });
+    if (toolTextForDB) inbound.push({ role: "tool", content: toolTextForDB });
     if (inbound.length) {
       await prisma.message.createMany({
         data: inbound.map(m => ({
@@ -223,13 +250,9 @@ export async function chatRoutes(app: FastifyInstance) {
       });
     }
 
-    // create the assistant reply and capture its id
+    // Store the assistant reply and return IDs
     const assistantMessage = await prisma.message.create({
-      data: {
-        role: "assistant",
-        content: result.content,
-        conversationId: conv.id
-      }
+      data: { role: "assistant", content: result.content, conversationId: conv.id }
     });
 
     const nextSuggestions = getPostReplySuggestions(result.content || "", "en", 3);
@@ -268,7 +291,10 @@ export async function chatRoutes(app: FastifyInstance) {
     const { id } = req.params;
     const conv = await prisma.conversation.findFirst({ where: { id, userId: req.user.id } });
     if (!conv) return reply.code(404).send({ error: "Not found" });
-    const msgs = await prisma.message.findMany({ where: { conversationId: id }, orderBy: { createdAt: "asc" } });
+    const msgs = await prisma.message.findMany({
+      where: { conversationId: id },
+      orderBy: { createdAt: "asc" }
+    });
     return { conversation: conv, messages: msgs };
   });
 }
