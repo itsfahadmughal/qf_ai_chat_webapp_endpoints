@@ -54,6 +54,68 @@ export async function mcpRoutes(app: FastifyInstance) {
     return prisma.mCPServer.findMany({ where: { hotelId } });
   });
 
+  // Enable server
+  app.patch("/mcp/servers/:id/enable", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req);
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const { id } = req.params as { id: string };
+
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!row) return reply.code(404).send({ error: "Server not found" });
+
+    const updated = await prisma.mCPServer.update({ where: { id }, data: { isActive: true } });
+
+    // optional: warm up so it's ready now (otherwise it'll spawn on first use)
+    try { await mcpManager.listTools(id); } catch { /* ignore warmup failures */ }
+
+    return updated;
+  });
+
+  // Disable server (and close cached client)
+  app.patch("/mcp/servers/:id/disable", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req);
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const { id } = req.params as { id: string };
+
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!row) return reply.code(404).send({ error: "Server not found" });
+
+    const updated = await prisma.mCPServer.update({ where: { id }, data: { isActive: false } });
+    await mcpManager.close(id); // drop cached stdio client right away
+    return { ...updated, closed: true };
+  });
+
+  // (Optional) Delete server entirely
+  app.delete("/mcp/servers/:id", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req);
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const { id } = req.params as { id: string };
+
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!row) return reply.code(404).send({ error: "Server not found" });
+
+    await mcpManager.close(id);
+    await prisma.mCPServer.delete({ where: { id } });
+    return { ok: true };
+  });
+
+  // (Nice) Status probe
+  app.get("/mcp/servers/:id/status", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req);
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const { id } = req.params as { id: string };
+
+    const s = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!s) return reply.code(404).send({ error: "Server not found" });
+
+    let alive = false, toolsCount: number | undefined, error: string | undefined;
+    if (s.isActive) {
+      try { const tools = await mcpManager.listTools(id); alive = true; toolsCount = (tools as any)?.tools?.length; }
+      catch (e: any) { error = String(e?.message ?? e); }
+    }
+    return { isActive: s.isActive, alive, toolsCount, error };
+  });
+
   // Discover tools on a server
   app.get("/mcp/servers/:id/tools", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req);

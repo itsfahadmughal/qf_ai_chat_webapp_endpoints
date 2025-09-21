@@ -20,6 +20,9 @@ importers:
       '@prisma/client':
         specifier: ^6.14.0
         version: 6.14.0(prisma@6.14.0(typescript@5.9.2))(typescript@5.9.2)
+      '@xmldom/xmldom':
+        specifier: ^0.8.11
+        version: 0.8.11
       bcryptjs:
         specifier: ^3.0.2
         version: 3.0.2
@@ -38,6 +41,9 @@ importers:
       prisma:
         specifier: ^6.14.0
         version: 6.14.0(typescript@5.9.2)
+      xpath:
+        specifier: ^0.0.34
+        version: 0.0.34
       zod:
         specifier: 3.23.8
         version: 3.23.8
@@ -421,6 +427,10 @@ packages:
   '@typescript-eslint/visitor-keys@8.40.0':
     resolution: {integrity: sha512-8CZ47QwalyRjsypfwnbI3hKy5gJDPmrkLjkgMxhi0+DZZ2QNx2naS6/hWoVYUHU7LU2zleF68V9miaVZvhFfTA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@xmldom/xmldom@0.8.11':
+    resolution: {integrity: sha512-cQzWCtO6C8TQiYl1ruKNn2U6Ao4o4WBBcbL61yJl84x+j5sOWWFU9X7DpND8XZG3daDppSsigMdfAIl2upQBRw==}
+    engines: {node: '>=10.0.0'}
 
   abstract-logging@2.0.1:
     resolution: {integrity: sha512-2BjRTZxTPvheOvGbBslFSYOUkr+SjPtOnrLP33f+VIWLzezQpZcqVg7ja3L4dBXmzzgwT+a029jRx5PCi3JuiA==}
@@ -1357,6 +1367,10 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
+  xpath@0.0.34:
+    resolution: {integrity: sha512-FxF6+rkr1rNSQrhUNYrAFJpRXNzlDoMxeXN5qI84939ylEv3qqPFKa85Oxr6tDaJKqwW6KKyo2v26TSv3k6LeA==}
+    engines: {node: '>=0.6.0'}
+
   xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
@@ -1714,6 +1728,8 @@ snapshots:
     dependencies:
       '@typescript-eslint/types': 8.40.0
       eslint-visitor-keys: 4.2.1
+
+  '@xmldom/xmldom@0.8.11': {}
 
   abstract-logging@2.0.1: {}
 
@@ -2707,6 +2723,8 @@ snapshots:
   word-wrap@1.2.5: {}
 
   wrappy@1.0.2: {}
+
+  xpath@0.0.34: {}
 
   xtend@4.0.2: {}
 
