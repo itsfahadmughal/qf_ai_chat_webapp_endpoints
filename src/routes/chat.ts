@@ -156,6 +156,23 @@ export async function chatRoutes(app: FastifyInstance) {
       });
       if (!srv) return reply.code(404).send({ error: "MCP server not found for this hotel" });
 
+      let toolArgs: Record<string, unknown> = tool.args ?? {};
+        if (tool.name.startsWith("brevo.") && !(toolArgs as any).apiKey) {
+          const cred = await prisma.hotelProviderCredential.findUnique({
+            where: { hotelId_provider: { hotelId: hotelIdForPolicy, provider: "brevo" as any } },
+            select: { encKey: true, iv: true, tag: true, isActive: true }
+          });
+          if (!cred || !cred.isActive) {
+            return reply.code(400).send({ error: "brevo_credential_missing", details: "No active Brevo credential for this hotel" });
+          }
+          const apiKey = decryptSecret(
+            cred.encKey as unknown as Buffer,
+            cred.iv as unknown as Buffer,
+            cred.tag as unknown as Buffer
+          );
+          toolArgs = { ...toolArgs, apiKey };
+        }
+        
       const started = Date.now();
       try {
         const res = await mcpManager.callTool(tool.serverId, tool.name, tool.args);

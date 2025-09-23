@@ -3,111 +3,150 @@ import type { FastifyInstance } from "fastify";
 import { prisma } from "../db.js";
 import { z } from "zod";
 import { mcpManager } from "../mcp/manager.js";
+import { decryptSecret } from "../crypto/secrets.js";
 
 const CreateServerSchema = z.object({
-  name: z.string(),
-  transport: z.enum(["stdio", "http"]),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  url: z.string().url().optional(),
-  isActive: z.boolean().default(true),
-  // Keeping env allowed for future, but we ignore it for now (no crypto needed)
-  env: z.record(z.string(), z.string()).optional()
+  name: z.string().min(1),
+  transport: z.enum(["stdio","http","remote"]).default("stdio"),
+  command: z.string().optional(),          // for stdio
+  args: z.array(z.string()).optional(),    // for stdio
+  url: z.string().url().optional(),        // for http/remote
+  isActive: z.boolean().default(true)
 });
 
 export async function mcpRoutes(app: FastifyInstance) {
-  // helper to get the caller's hotelId from DB
   async function getHotelId(req: any) {
     const me = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { hotelId: true }
     });
-    return me?.hotelId;
+    return me?.hotelId ?? null;
   }
 
-  // Create MCP server config (per hotel)
+  // Helper: inject Brevo API key from BYOK table (if missing in args)
+  async function injectBrevoKey(hotelId: string, args: Record<string, unknown>) {
+    if ((args as any)?.apiKey) return args;
+    const cred = await prisma.hotelProviderCredential.findUnique({
+      where: { hotelId_provider: { hotelId, provider: "brevo" as any } },
+      select: { encKey: true, iv: true, tag: true, isActive: true }
+    });
+    if (!cred || !cred.isActive) {
+      throw new Error("No active Brevo credential configured for this hotel");
+    }
+    const apiKey = decryptSecret(
+      cred.encKey as unknown as Buffer,
+      cred.iv as unknown as Buffer,
+      cred.tag as unknown as Buffer
+    );
+    return { ...args, apiKey };
+  }
+
+  // CREATE (server belongs to current user's hotel)
   app.post("/mcp/servers", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req);
     if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-
     const body = CreateServerSchema.parse(req.body ?? {});
+
     const row = await prisma.mCPServer.create({
       data: {
         hotelId,
         name: body.name,
         transport: body.transport,
         command: body.command,
-        args: body.args ?? [],
+        args: body.args,
         url: body.url,
-        isActive: body.isActive,
-        // envEnc: null // ignoring encrypted env for now
+        isActive: body.isActive
       }
     });
+
+    if (row.isActive) { try { await mcpManager.listTools(row.id); } catch {} }
     return row;
   });
 
-  // List MCP servers for this hotel
-  app.get("/mcp/servers", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+  // LIST (my hotel)
+  app.get("/mcp/servers", { preHandler: (app as any).authenticate }, async (req: any) => {
     const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-
-    return prisma.mCPServer.findMany({ where: { hotelId } });
+    if (!hotelId) return { error: "User has no hotelId" };
+    return prisma.mCPServer.findMany({
+      where: { hotelId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true, name: true, transport: true, command: true, args: true, url: true,
+        isActive: true, createdAt: true, updatedAt: true
+      }
+    });
   });
 
-  // Enable server
-  app.patch("/mcp/servers/:id/enable", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
-    const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-    const { id } = req.params as { id: string };
+  // OPTIONAL admin list by hotel
+  app.get("/admin/hotels/:hotelId/mcp/servers", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    // if (req.user.role !== 'admin') return reply.code(403).send({ error: "Forbidden" });
+    const { hotelId } = req.params as { hotelId: string };
+    return prisma.mCPServer.findMany({ where: { hotelId }, orderBy: { createdAt: "desc" } });
+  });
 
+  // GET TOOLS
+  app.get("/mcp/servers/:id/tools", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req);
+    const { id } = req.params as { id: string };
     const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
     if (!row) return reply.code(404).send({ error: "Server not found" });
+    try {
+      const tools = await mcpManager.listTools(id);
+      return tools;
+    } catch (e: any) {
+      return reply.code(500).send({ error: "mcp_list_error", details: String(e?.message ?? e) });
+    }
+  });
 
+  // EXECUTE TOOL (auto-inject Brevo API key from BYOK if needed)
+  app.post("/tools/execute", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req);
+    const Body = z.object({
+      serverId: z.string(),
+      tool: z.string(),
+      arguments: z.record(z.string(), z.unknown()).default({})
+    });
+    const { serverId, tool, arguments: argsRaw } = Body.parse(req.body ?? {});
+    const srv = await prisma.mCPServer.findFirst({ where: { id: serverId, hotelId, isActive: true } });
+    if (!srv) return reply.code(404).send({ error: "MCP server not found for this hotel" });
+
+    let args = argsRaw as Record<string, unknown>;
+    if (tool.startsWith("brevo.")) {
+      try { args = await injectBrevoKey(hotelId!, args); }
+      catch (e: any) { return reply.code(400).send({ error: "brevo_credential_missing", details: String(e?.message ?? e) }); }
+    }
+
+    try {
+      const out = await mcpManager.callTool(serverId, tool, args);
+      return out;
+    } catch (e: any) {
+      return reply.code(500).send({ error: "tool_error", details: String(e?.message ?? e) });
+    }
+  });
+
+  // ENABLE / DISABLE / STATUS / DELETE
+  app.patch("/mcp/servers/:id/enable", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!row) return reply.code(404).send({ error: "Server not found" });
     const updated = await prisma.mCPServer.update({ where: { id }, data: { isActive: true } });
-
-    // optional: warm up so it's ready now (otherwise it'll spawn on first use)
-    try { await mcpManager.listTools(id); } catch { /* ignore warmup failures */ }
-
+    try { await mcpManager.listTools(id); } catch {}
     return updated;
   });
 
-  // Disable server (and close cached client)
   app.patch("/mcp/servers/:id/disable", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
-    const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-    const { id } = req.params as { id: string };
-
+    const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
     const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
     if (!row) return reply.code(404).send({ error: "Server not found" });
-
     const updated = await prisma.mCPServer.update({ where: { id }, data: { isActive: false } });
-    await mcpManager.close(id); // drop cached stdio client right away
+    await mcpManager.close(id);
     return { ...updated, closed: true };
   });
 
-  // (Optional) Delete server entirely
-  app.delete("/mcp/servers/:id", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
-    const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-    const { id } = req.params as { id: string };
-
-    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
-    if (!row) return reply.code(404).send({ error: "Server not found" });
-
-    await mcpManager.close(id);
-    await prisma.mCPServer.delete({ where: { id } });
-    return { ok: true };
-  });
-
-  // (Nice) Status probe
   app.get("/mcp/servers/:id/status", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
-    const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-    const { id } = req.params as { id: string };
-
+    const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
     const s = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
     if (!s) return reply.code(404).send({ error: "Server not found" });
-
     let alive = false, toolsCount: number | undefined, error: string | undefined;
     if (s.isActive) {
       try { const tools = await mcpManager.listTools(id); alive = true; toolsCount = (tools as any)?.tools?.length; }
@@ -116,81 +155,12 @@ export async function mcpRoutes(app: FastifyInstance) {
     return { isActive: s.isActive, alive, toolsCount, error };
   });
 
-  // Discover tools on a server
-  app.get("/mcp/servers/:id/tools", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
-    const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-
-    const { id } = req.params as { id: string };
-    const server = await prisma.mCPServer.findFirst({ where: { id, hotelId, isActive: true } });
-    if (!server) return reply.code(404).send({ error: "Server not found" });
-
-    const tools = await mcpManager.listTools(id);
-    return tools;
+  app.delete("/mcp/servers/:id", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
+    const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!row) return reply.code(404).send({ error: "Server not found" });
+    await mcpManager.close(id);
+    await prisma.mCPServer.delete({ where: { id } });
+    return { ok: true };
   });
-
-  // Execute a tool and log the call
-  app.post("/tools/execute", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
-    const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-
-    const Body = z.object({
-      serverId: z.string(),
-      tool: z.string(),
-      arguments: z.record(z.string(), z.unknown()).default({}),
-      conversationId: z.string().optional()
-    }).parse(req.body ?? {});
-
-    const server = await prisma.mCPServer.findFirst({
-      where: { id: Body.serverId, hotelId, isActive: true }
-    });
-    if (!server) return reply.code(404).send({ error: "Server not found" });
-
-    const started = Date.now();
-    try {
-      const res = await mcpManager.callTool(Body.serverId, Body.tool, Body.arguments);
-      const contentText = res?.content?.[0]?.text ?? "";
-      const resultJson = tryJson(contentText);
-
-      await prisma.toolCallLog.create({
-        data: {
-          hotelId,
-          userId: req.user.id,
-          conversationId: Body.conversationId ?? null,
-          serverId: server.id,
-          toolName: Body.tool,
-          args: Body.arguments,
-          result: resultJson ?? { text: contentText },
-          status: "ok",
-          startedAt: new Date(started),
-          finishedAt: new Date(),
-          durationMs: Date.now() - started
-        }
-      });
-
-      return { ok: true, content: res.content ?? [], tool: Body.tool, raw: res };
-    } catch (err: any) {
-      await prisma.toolCallLog.create({
-        data: {
-          hotelId,
-          userId: req.user.id,
-          conversationId: Body.conversationId ?? null,
-          serverId: Body.serverId,
-          toolName: Body.tool,
-          args: Body.arguments,
-          error: String(err?.message ?? err),
-          status: "error",
-          startedAt: new Date(started),
-          finishedAt: new Date(),
-          durationMs: Date.now() - started
-        }
-      });
-      return reply.code(500).send({ error: "tool_error", details: String(err?.message ?? err) });
-    }
-  });
-}
-
-function tryJson(t?: string) {
-  if (!t) return null;
-  try { return JSON.parse(t); } catch { return null; }
 }
