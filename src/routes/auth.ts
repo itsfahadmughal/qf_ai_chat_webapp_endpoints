@@ -8,7 +8,8 @@ import { sendPasswordResetEmail } from "../lib/mailer.js";
 const RegisterSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  hotelId: z.string()
+  hotelId: z.string(), 
+  userType: z.enum(["author", "reader"]).default("reader") 
 });
 
 const LoginSchema = z.object({
@@ -48,42 +49,49 @@ function generateOtpCode() {
 export async function authRoutes(app: FastifyInstance) {
   // --- Register ---
   app.post("/auth/register", async (req, reply) => {
-    const { email, password, hotelId } = RegisterSchema.parse(req.body);
+    const { email, password, hotelId, userType } = RegisterSchema.parse(req.body ?? {});
+    const exists = await prisma.user.findUnique({ where: { email } });
+    if (exists) return reply.code(409).send({ error: "Email already registered" });
 
-    const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel) return reply.code(400).send({ error: "Invalid hotelId" });
-    if (!hotel.isActive) return reply.code(403).send({ error: "Hotel is deactivated" });
+    const hash = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({
+      data: { email, passwordHash: hash, hotelId, role: userType as any } 
+    });
 
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) return reply.code(409).send({ error: "Email already in use" });
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({ data: { email, passwordHash, hotelId } });
-
-    const token = await reply.jwtSign({ id: user.id, email: user.email });
+    const token = app.jwt.sign({ id: user.id, role: user.role });
     return { token };
   });
 
-  // --- Login ---
   app.post("/auth/login", async (req, reply) => {
-    const { email, password } = LoginSchema.parse(req.body);
-
+    const { email, password } = LoginSchema.parse(req.body ?? {});
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return reply.code(401).send({ error: "Invalid credentials" });
 
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) return reply.code(401).send({ error: "Invalid credentials" });
 
-    const hotel = await prisma.hotel.findUnique({ where: { id: user.hotelId } });
-    if (!hotel || !hotel.isActive) return reply.code(403).send({ error: "Hotel is deactivated" });
-
-    const token = await reply.jwtSign({ id: user.id, email: user.email });
+    const token = app.jwt.sign({ id: user.id, role: user.role });
     return { token };
   });
 
   // --- Me ---
-  app.get("/me", { preHandler: (app as any).authenticate }, async (req: any) => {
-    return { id: req.user.id, email: req.user.email };
+  app.get("/me", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const me = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        email: true,      
+        role: true,      
+        hotelId: true,
+        createdAt: true,  
+        hotel: {          
+          select: { id: true, name: true, isActive: true }
+        }
+      }
+    });
+
+    if (!me) return reply.code(404).send({ error: "User not found" });
+    return me;
   });
 
   // NEW: Set/assign hotel to current user

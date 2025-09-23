@@ -14,6 +14,11 @@ enum Provider {
   brevo     
 }
 
+enum UserRole {
+  author
+  reader
+}
+
 model Hotel {
   id                      String                    @id @default(cuid())
   name                    String
@@ -42,7 +47,7 @@ model User {
   id                 String               @id @default(cuid())
   email              String               @unique
   passwordHash       String
-  role               String               @default("reader") // or "author", "admin"
+  role               UserRole             @default(reader)
   isActive           Boolean              @default(true)
   hotelId            String
   hotel              Hotel                @relation(fields: [hotelId], references: [id])

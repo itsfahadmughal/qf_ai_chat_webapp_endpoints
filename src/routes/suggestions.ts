@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 import { getComposerSuggestions, getPostReplySuggestions, resolveSuggestion } from "../suggestions/engine.js";
 import { prisma } from "../db.js";

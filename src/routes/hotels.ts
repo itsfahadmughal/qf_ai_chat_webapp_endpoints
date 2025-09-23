@@ -9,6 +9,16 @@ export async function hotelRoutes(app: FastifyInstance) {
     return prisma.hotel.create({ data: { name: body.name } });
   });
 
+   app.get("/hotels", async (req: any) => {
+    const q = z.object({ activeOnly: z.coerce.boolean().optional() })
+                .parse(req.query ?? {});
+      return prisma.hotel.findMany({
+        where: q.activeOnly ? { isActive: true } : undefined,
+        select: { id: true, name: true, isActive: true, createdAt: true},
+        orderBy: { name: "asc" }
+      });
+    });
+
   // Toggle hotel active/deactive
   app.patch("/hotels/:id/active", async (req, reply) => {
     const { id } = req.params as any;
