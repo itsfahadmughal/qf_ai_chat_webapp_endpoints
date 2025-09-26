@@ -1,6 +1,5 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import jwt from "@fastify/jwt";
 import { env } from "./env.js";
 import { registerJWT } from "./auth.js";
 import { authRoutes } from "./routes/auth.js";
@@ -18,14 +17,6 @@ const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: true }); // allow all in dev
 await registerJWT(app);
-
-app.decorate("authenticate", async function (request, reply) {
-  try {
-    await request.jwtVerify();
-  } catch (err) {
-    reply.code(401).send({ error: "Unauthorized" });
-  }
-});
 
 app.get("/health", async () => ({ ok: true }));
 
