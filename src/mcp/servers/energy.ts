@@ -6,21 +6,25 @@ import ModbusRTU from "modbus-serial";
 
 const server = new McpServer({ name: "energy-mcp", version: "1.2.0" });
 
-async function withModbus<T>(host: string, port: number, unitId: number, fn: (c: ModbusRTU) => Promise<T>) {
-  const client = new ModbusRTU();
+type ModbusClient = any;
+const ModbusCtor: any = (ModbusRTU as any);
+
+async function withModbus<T>(
+  host: string,
+  port: number,
+  unitId: number,
+  fn: (c: ModbusClient) => Promise<T>
+) {
+  const client: ModbusClient = new ModbusCtor();
   try {
-    await client.connectTCP(host, { port, timeout: 5000 });
+    await client.connectTCP(host, { port });
     client.setID(unitId);
-    client.setTimeout(5000);
-    const result = await fn(client as unknown as ModbusRTU);
-    try { client.close(); } catch {}
+    const result = await fn(client);
     return result;
-  } catch (err) {
+  } finally {
     try { client.close(); } catch {}
-    throw err;
   }
 }
-
 /** Addressing modes */
 const Addressing = z.enum(["zeroBased", "oneBased", "legacy4x", "legacy3x"]);
 function normalizeAddress(addr: number, addressing: z.infer<typeof Addressing> = "zeroBased") {

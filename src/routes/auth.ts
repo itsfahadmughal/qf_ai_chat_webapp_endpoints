@@ -75,18 +75,17 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // --- Me ---
+  // --- Me (fetch from DB; select only existing fields on your User model) ---
   app.get("/me", { preHandler: app.authenticate }, async (req: any, reply) => {
     const me = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: {
         id: true,
-        email: true,      
-        role: true,      
+        email: true,
+        role: true,
         hotelId: true,
-        createdAt: true,  
-        hotel: {          
-          select: { id: true, name: true, isActive: true }
-        }
+        createdAt: true,
+        hotel: { select: { id: true, name: true, isActive: true } }
       }
     });
 

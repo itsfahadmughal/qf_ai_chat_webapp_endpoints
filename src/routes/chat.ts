@@ -6,6 +6,7 @@ import { Providers } from "../providers/index.js";
 import { decryptSecret } from "../crypto/secrets.js";
 import { getPostReplySuggestions } from "../suggestions/engine.js";
 import { mcpManager } from "../mcp/manager.js";
+import type { ChatMessage } from "../providers/types.js";
 
 type ProviderName = "openai" | "deepseek" | "perplexity";
 
@@ -176,7 +177,7 @@ export async function chatRoutes(app: FastifyInstance) {
       const started = Date.now();
       try {
         const res = await mcpManager.callTool(tool.serverId, tool.name, tool.args);
-        const rawText = res?.content?.[0]?.text ?? "";
+        const rawText = (res as any)?.content?.[0]?.text ?? "";
         // a label helps the model understand what it is seeing
         const labeled = `TOOL ${tool.name} RESULT:\n${rawText}`;
         // trim very large tool output (optional safety)
@@ -227,7 +228,10 @@ export async function chatRoutes(app: FastifyInstance) {
     const p = Providers[chosenProvider];
     let result;
     try {
-      const adapted = adaptMessagesForProvider(chosenProvider, messagesForLLM);
+      const adapted: ChatMessage[] = messagesForLLM.map(m => ({
+        role: (m.role as "user" | "system" | "assistant" | "tool"),
+        content: m.content
+      }));
       result = await p.chat({
         model: chosenModel,
         messages: adapted,

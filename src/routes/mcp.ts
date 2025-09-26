@@ -87,8 +87,10 @@ export async function mcpRoutes(app: FastifyInstance) {
   // GET TOOLS
   app.get("/mcp/servers/:id/tools", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req);
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const hid = hotelId as string;
     const { id } = req.params as { id: string };
-    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId:hid } });
     if (!row) return reply.code(404).send({ error: "Server not found" });
     try {
       const tools = await mcpManager.listTools(id);
@@ -101,13 +103,15 @@ export async function mcpRoutes(app: FastifyInstance) {
   // EXECUTE TOOL (auto-inject Brevo API key from BYOK if needed)
   app.post("/tools/execute", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req);
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const hid = hotelId as string;
     const Body = z.object({
       serverId: z.string(),
       tool: z.string(),
       arguments: z.record(z.string(), z.unknown()).default({})
     });
     const { serverId, tool, arguments: argsRaw } = Body.parse(req.body ?? {});
-    const srv = await prisma.mCPServer.findFirst({ where: { id: serverId, hotelId, isActive: true } });
+    const srv = await prisma.mCPServer.findFirst({ where: { id: serverId, hotelId:hid, isActive: true } });
     if (!srv) return reply.code(404).send({ error: "MCP server not found for this hotel" });
 
     let args = argsRaw as Record<string, unknown>;
@@ -127,7 +131,9 @@ export async function mcpRoutes(app: FastifyInstance) {
   // ENABLE / DISABLE / STATUS / DELETE
   app.patch("/mcp/servers/:id/enable", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
-    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const hid = hotelId as string;
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId:hid } });
     if (!row) return reply.code(404).send({ error: "Server not found" });
     const updated = await prisma.mCPServer.update({ where: { id }, data: { isActive: true } });
     try { await mcpManager.listTools(id); } catch {}
@@ -136,7 +142,9 @@ export async function mcpRoutes(app: FastifyInstance) {
 
   app.patch("/mcp/servers/:id/disable", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
-    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const hid = hotelId as string;
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId:hid } });
     if (!row) return reply.code(404).send({ error: "Server not found" });
     const updated = await prisma.mCPServer.update({ where: { id }, data: { isActive: false } });
     await mcpManager.close(id);
@@ -145,7 +153,9 @@ export async function mcpRoutes(app: FastifyInstance) {
 
   app.get("/mcp/servers/:id/status", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
-    const s = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const hid = hotelId as string;
+    const s = await prisma.mCPServer.findFirst({ where: { id, hotelId:hid } });
     if (!s) return reply.code(404).send({ error: "Server not found" });
     let alive = false, toolsCount: number | undefined, error: string | undefined;
     if (s.isActive) {
@@ -157,7 +167,9 @@ export async function mcpRoutes(app: FastifyInstance) {
 
   app.delete("/mcp/servers/:id", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req); const { id } = req.params as { id: string };
-    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId } });
+    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+    const hid = hotelId as string;
+    const row = await prisma.mCPServer.findFirst({ where: { id, hotelId:hid } });
     if (!row) return reply.code(404).send({ error: "Server not found" });
     await mcpManager.close(id);
     await prisma.mCPServer.delete({ where: { id } });

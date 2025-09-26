@@ -13,10 +13,3 @@ export async function registerJWT(app: FastifyInstance) {
   });
 }
 
-// Type augmentation (helps TS when using app.authenticate)
-declare module "fastify" {
-  interface FastifyInstance { authenticate: any }
-  interface FastifyRequest {
-    user: { id: string; email: string }
-  }
-}

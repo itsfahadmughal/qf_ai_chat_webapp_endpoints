@@ -32,7 +32,8 @@ export async function feedbackRoutes(app: FastifyInstance) {
     const { reaction, reason, comment } = SetFeedbackBody.parse(req.body ?? {});
 
     const check = await assertOwnAssistantMessage(id, req.user.id);
-    if ("error" in check) return reply.code(check.error.code).send({ error: check.error.msg });
+    const err = (check as any).error;
+    if (err) return reply.code(err.code).send({ error: err.msg });
 
     if (reaction === "none") {
       await prisma.messageFeedback.deleteMany({

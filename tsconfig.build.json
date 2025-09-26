@@ -1,8 +1,18 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "typeRoots": ["./src/types", "./node_modules/@types"],
     "noEmitOnError": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "strict": true,
+    "types": ["node"],
+    "lib": ["ES2022"],
   },
   "include": ["src", "prisma"]
 }
