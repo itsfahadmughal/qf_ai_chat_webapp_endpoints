@@ -1,13 +1,37 @@
 # compose.prod.yml
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:prod
     env_file: .env
-    environment:
-      NODE_ENV: production
-      PORT: "3000"
-    ports:
-      - "3000:3000"
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.qfapi.rule=Host(`apis.qualityfriend.solutions`)"
+      - "traefik.http.routers.qfapi.entrypoints=websecure"
+      - "traefik.http.routers.qfapi.tls.certresolver=letsencrypt"
+      - "traefik.http.services.qfapi.loadbalancer.server.port=3000"
+    networks: [appnet]
+
+  traefik:
+    image: traefik:v3.1
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=you@qualityfriend.solutions"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports: ["80:80", "443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+    restart: unless-stopped
+    networks: [appnet]
+
+networks:
+  appnet:
+volumes:
+  traefik_letsencrypt:
