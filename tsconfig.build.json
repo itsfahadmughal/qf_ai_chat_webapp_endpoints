@@ -3,5 +3,6 @@
   "compilerOptions": {
     "noEmitOnError": false,
     "skipLibCheck": true
-  }
+  },
+  "include": ["src", "prisma"]
 }
