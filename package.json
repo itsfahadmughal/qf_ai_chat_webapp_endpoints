@@ -11,7 +11,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "mcp:energy": "tsx src/mcp/servers/energy.ts",
-    "build": "tsc"
+    "build": "tsc -p tsconfig.build.json"
   },
   "keywords": [],
   "author": "",

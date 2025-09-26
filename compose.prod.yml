@@ -1,57 +1,13 @@
-version: "3.9"
-
+# compose.prod.yml
 services:
   app:
-    # Use ONE of these:
-    build: . # build from your Dockerfile
-    # image: ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     env_file: .env
     environment:
       NODE_ENV: production
       PORT: "3000"
-    restart: unless-stopped
-    depends_on:
-      - traefik
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.chatapi.rule=Host(`api.yourdomain.com`)"
-      - "traefik.http.routers.chatapi.entrypoints=websecure"
-      - "traefik.http.routers.chatapi.tls.certresolver=letsencrypt"
-      - "traefik.http.services.chatapi.loadbalancer.server.port=3000"
-    networks: [appnet]
-    # Optional healthcheck (only if your image has curl/wget and you expose /healthz):
-    # healthcheck:
-    #   test: ["CMD-SHELL", "curl -fsS http://localhost:3000/healthz || exit 1"]
-    #   interval: 30s
-    #   timeout: 3s
-    #   retries: 3
-    #   start_period: 10s
-
-  traefik:
-    image: traefik:v3.1
-    command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      # redirect http -> https
-      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
-      # Let's Encrypt
-      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
-      - "--certificatesresolvers.letsencrypt.acme.email=you@yourdomain.com"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik_letsencrypt:/letsencrypt
+      - "3000:3000"
     restart: unless-stopped
-    networks: [appnet]
-
-networks:
-  appnet:
-
-volumes:
-  traefik_letsencrypt:
