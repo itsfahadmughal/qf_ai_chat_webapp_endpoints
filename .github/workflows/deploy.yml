@@ -15,11 +15,13 @@ jobs:
         run: echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u itsfahadmughal --password-stdin
       - name: Build image
         run: |
-          TAG=prod-${{ github.sha }}
+          export TAG=prod-${{ github.sha }}
           docker build -t ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:$TAG -t ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:latest .
+          echo "TAG=$TAG" >> $GITHUB_ENV
+
       - name: Push image
         run: |
-          docker push ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:$TAG
+          docker push ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:${TAG}
           docker push ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:latest
 
   deploy:
