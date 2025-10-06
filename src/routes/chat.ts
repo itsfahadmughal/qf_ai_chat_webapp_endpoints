@@ -7,6 +7,7 @@ import { decryptSecret } from "../crypto/secrets.js";
 import { getPostReplySuggestions } from "../suggestions/engine.js";
 import { mcpManager } from "../mcp/manager.js";
 import type { ChatMessage } from "../providers/types.js";
+import { injectBrevoKeyIfNeeded } from "../lib/byok.js";
 
 type ProviderName = "openai" | "deepseek" | "perplexity";
 
@@ -176,17 +177,18 @@ export async function chatRoutes(app: FastifyInstance) {
         
       const started = Date.now();
       try {
-        const res = await mcpManager.callTool(tool.serverId, tool.name, tool.args);
+        const finalArgs = await injectBrevoKeyIfNeeded(user.id, srv.id, tool.args);
+        const res = await mcpManager.callTool(tool.serverId, tool.name, finalArgs);
         const rawText = (res as any)?.content?.[0]?.text ?? "";
         // a label helps the model understand what it is seeing
         const labeled = `TOOL ${tool.name} RESULT:\n${rawText}`;
         // trim very large tool output (optional safety)
-        const MAX_TOOL_CONTEXT = 4000;
+        const MAX_TOOL_CONTEXT = 8000;
         toolTextForDB = labeled;
         toolContextForModel = labeled.length > MAX_TOOL_CONTEXT ? labeled.slice(0, MAX_TOOL_CONTEXT) + "\n[truncated]" : labeled;
 
         // Push as role "tool" for *our* in-memory list; we'll adapt before sending
-        messagesForLLM.push({ role: "tool", content: toolContextForModel });
+        messagesForLLM.push({ role: "system", content: toolContextForModel });
 
         // Log success
         await prisma.toolCallLog.create({
