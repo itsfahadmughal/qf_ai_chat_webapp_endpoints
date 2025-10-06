@@ -1,7 +1,7 @@
 # compose.prod.yml
 services:
   app:
-    image: ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:prod
+    image: ghcr.io/itsfahadmughal/qf_ai_chat_webapp_endpoints:latest
     env_file: .env
     restart: unless-stopped
     labels:

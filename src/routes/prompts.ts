@@ -69,7 +69,8 @@ export async function promptRoutes(app: FastifyInstance) {
           : undefined,
         categoryId: q.categoryId ?? undefined
       },
-      orderBy: { updatedAt: "desc" }
+      orderBy: { updatedAt: "desc" },
+      include: { author: { select: { id: true, email: true } } } 
     });
   });
 
@@ -80,7 +81,8 @@ export async function promptRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
 
     const row = await prisma.prompt.findFirst({
-      where: { id, hotelId: user.hotelId }
+      where: { id, hotelId: user.hotelId },
+      include: { author: { select: { id: true, email: true } } }
     });
     if (!row) return reply.code(404).send({ error: "Not found" });
     return row;
@@ -111,7 +113,7 @@ export async function promptRoutes(app: FastifyInstance) {
       if (!existing) return reply.code(404).send({ error: "Not found" });
 
       // (optional) If you want to restrict to the creator only, uncomment:
-      // if (existing.authorId !== user.id) return reply.code(403).send({ error: "Only the creator can update this prompt" });
+      if (existing.authorId !== user.id) return reply.code(403).send({ error: "Only the creator can update this prompt" });
 
       const updated = await prisma.prompt.update({ where: { id }, data: body });
       return updated;
@@ -134,7 +136,7 @@ export async function promptRoutes(app: FastifyInstance) {
       if (!existing) return reply.code(404).send({ error: "Not found" });
 
       // (optional) restrict to creator only:
-      // if (existing.authorId !== user.id) return reply.code(403).send({ error: "Only the creator can delete this prompt" });
+      if (existing.authorId !== user.id) return reply.code(403).send({ error: "Only the creator can delete this prompt" });
 
       await prisma.prompt.delete({ where: { id } });
       return { ok: true };
