@@ -23,7 +23,7 @@ export async function injectBrevoKeyIfNeeded(
   if (!srv) throw new Error("MCP server not found for this hotel or inactive");
 
   // detect brevo server (prefer srv.kind if you have it)
-  const isBrevo = (srv.kind?.toLowerCase() ?? srv.name?.toLowerCase() ?? "").includes("brevo");
+  const isBrevo = (srv.name?.toLowerCase() ?? "").includes("brevo");
   if (!isBrevo) return args;
 
   // hotel BYOK credential
