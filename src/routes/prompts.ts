@@ -25,9 +25,30 @@ export async function promptRoutes(app: FastifyInstance) {
         title: z.string().min(1),
         body: z.string().min(1),
         categoryId: z.string().optional(),
+        categoryName: z.string().optional(), 
         tags: z.array(z.string()).optional(),
         version: z.string().optional()
       }).parse(req.body);
+
+      // Resolve category
+      let resolvedCategoryId: string | null = null;
+      if (body.categoryId) {
+        const exists = await prisma.promptCategory.findFirst({
+          where: { id: body.categoryId, hotelId: user.hotelId },
+          select: { id: true }
+        });
+        if (!exists) {
+          return reply.code(400).send({ error: "Invalid categoryId for this hotel" });
+        }
+        resolvedCategoryId = body.categoryId;
+      } else if (body.categoryName) {
+        const cat = await prisma.promptCategory.upsert({
+          where: { hotelId_name: { hotelId: user.hotelId, name: body.categoryName } },
+          update: {},
+          create: { hotelId: user.hotelId, name: body.categoryName }
+        });
+        resolvedCategoryId = cat.id;
+      }
 
       return prisma.prompt.create({
         data: {
@@ -35,7 +56,7 @@ export async function promptRoutes(app: FastifyInstance) {
           authorId: user.id,
           title: body.title,
           body: body.body,
-          categoryId: body.categoryId ?? null,
+          categoryId: resolvedCategoryId,
           tags: body.tags ?? [],
           version: body.version ?? null
         }
@@ -70,7 +91,8 @@ export async function promptRoutes(app: FastifyInstance) {
         categoryId: q.categoryId ?? undefined
       },
       orderBy: { updatedAt: "desc" },
-      include: { author: { select: { id: true, email: true } } } 
+      include: { author: { select: { id: true, email: true } },
+      category: { select: { id: true, name: true } } } 
     });
   });
 
@@ -82,7 +104,8 @@ export async function promptRoutes(app: FastifyInstance) {
 
     const row = await prisma.prompt.findFirst({
       where: { id, hotelId: user.hotelId },
-      include: { author: { select: { id: true, email: true } } }
+      include: { author: { select: { id: true, email: true } },
+      category: { select: { id: true, name: true } } }
     });
     if (!row) return reply.code(404).send({ error: "Not found" });
     return row;
@@ -142,4 +165,25 @@ export async function promptRoutes(app: FastifyInstance) {
       return { ok: true };
     }
   );
+
+  app.get("/prompt-categories", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const { user } = await assertHotelAndProvider(req, reply);
+    if (reply.sent) return;
+    return prisma.promptCategory.findMany({
+      where: { hotelId: user.hotelId },
+      orderBy: { name: "asc" }
+    });
+  });
+
+  // Create category (author)
+  app.post("/prompt-categories", { preHandler: [app.authenticate as any, ensureAuthor] }, async (req: any, reply) => {
+    const { user } = await assertHotelAndProvider(req, reply);
+    if (reply.sent) return;
+    const body = z.object({ name: z.string().min(1) }).parse(req.body ?? {});
+    return prisma.promptCategory.upsert({
+      where: { hotelId_name: { hotelId: user.hotelId, name: body.name } },
+      update: {},
+      create: { hotelId: user.hotelId, name: body.name }
+    });
+  });
 }

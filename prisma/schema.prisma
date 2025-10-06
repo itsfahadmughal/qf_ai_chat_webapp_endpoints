@@ -32,6 +32,7 @@ model Hotel {
   prompts                 Prompt[]
   HotelProviderCredential HotelProviderCredential[]
   MCPServer               MCPServer[]
+  promptCategories        PromptCategory[]
 }
 
 model HotelProviderToggle {
@@ -93,11 +94,14 @@ model Message {
 }
 
 model PromptCategory {
-  id      String   @id @default(cuid())
-  name    String   @unique
-  prompts Prompt[]
-  // e.g. "SEO", "Support", matches the library filters in your PDF
+  id       String  @id @default(cuid())
+  hotelId  String
+  hotel    Hotel   @relation(fields: [hotelId], references: [id])
+  name     String
+  prompts  Prompt[]
+  @@unique([hotelId, name]) // used by upsert
 }
+
 
 model Prompt {
   id         String          @id @default(cuid())
