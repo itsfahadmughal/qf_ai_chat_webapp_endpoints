@@ -4,6 +4,7 @@ import { prisma } from "../db.js";
 import { z } from "zod";
 import { mcpManager } from "../mcp/manager.js";
 import { decryptSecret } from "../crypto/secrets.js";
+import { sanitizeToolsResponse } from "../mcp/sanitizeToolSchema.js";
 
 const CreateServerSchema = z.object({
   name: z.string().min(1),
@@ -93,7 +94,8 @@ export async function mcpRoutes(app: FastifyInstance) {
     const row = await prisma.mCPServer.findFirst({ where: { id, hotelId:hid } });
     if (!row) return reply.code(404).send({ error: "Server not found" });
     try {
-      const tools = await mcpManager.listTools(id);
+      const raw = await mcpManager.listTools(id);
+      const tools = sanitizeToolsResponse(raw.tools);
       return tools;
     } catch (e: any) {
       return reply.code(500).send({ error: "mcp_list_error", details: String(e?.message ?? e) });
