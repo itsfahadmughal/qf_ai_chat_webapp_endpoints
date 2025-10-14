@@ -44,6 +44,18 @@ export async function conversationRoutes(app: FastifyInstance) {
     const { id } = req.params as any;
     const conv = await prisma.conversation.findFirst({ where: { id, userId: req.user.id } });
     if (!conv) return reply.code(404).send({ error: "Not found" });
-    return prisma.message.findMany({ where: { conversationId: id }, orderBy: { createdAt: "asc" } });
+    const messagesRaw = await prisma.message.findMany({
+      where: { conversationId: id },
+      orderBy: { createdAt: "asc" }
+    });
+
+    const messages = messagesRaw.map(m => ({
+      ...m,
+      provider: conv.provider,
+      model: conv.model
+    }));
+
+    return { conversation: conv, messages };
+
   });
 }
