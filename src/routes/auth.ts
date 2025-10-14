@@ -47,6 +47,44 @@ function generateOtpCode() {
 }
 
 export async function authRoutes(app: FastifyInstance) {
+
+
+  app.put("/auth/password", { preHandler: app.authenticate }, async (req: any, reply) => {
+  try {
+    const Body = z.object({
+      currentPassword: z.string().min(1, "currentPassword is required"),
+      newPassword: z.string().min(8, "newPassword must be at least 8 characters")
+    }).parse(req.body ?? {});
+
+    const me = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true, passwordHash: true }
+    });
+    if (!me) return reply.code(401).send({ error: "Unauthorized" });
+
+    const ok = await bcrypt.compare(Body.currentPassword, me.passwordHash);
+    if (!ok) return reply.code(400).send({ error: "Current password is incorrect" });
+
+    if (Body.currentPassword === Body.newPassword) {
+      return reply.code(400).send({ error: "New password must be different from current password" });
+    }
+
+    const newHash = await bcrypt.hash(Body.newPassword, 10);
+    await prisma.user.update({
+      where: { id: me.id },
+      data: { passwordHash: newHash }
+    });
+
+      return { ok: true, message: "Password updated" };
+    } catch (e: any) {
+      if (e instanceof ZodError) {
+        return reply.code(400).send({ error: "validation_error", details: e.errors });
+      }
+      req.log.error(e);
+      return reply.code(500).send({ error: "Internal Server Error" });
+    }
+  });
+
   // --- Register ---
   app.post("/auth/register", async (req, reply) => {
     const { email, password, hotelId, userType } = RegisterSchema.parse(req.body ?? {});
