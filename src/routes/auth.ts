@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../db.js";
 import bcrypt from "bcryptjs";
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import crypto from "crypto";
 import { sendPasswordResetEmail } from "../lib/mailer.js";
 
