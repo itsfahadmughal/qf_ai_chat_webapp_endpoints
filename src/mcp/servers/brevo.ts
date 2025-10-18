@@ -98,7 +98,10 @@ server.registerTool(
     inputSchema: {
       apiKey: z.string().optional(),
       templateId: z.number().int(),
-      params: z.record(z.string(), z.unknown()).optional()
+       params: z.object({
+        Firstname: z.string().optional(),
+        Lastname: z.string().optional()
+      }).catchall(z.unknown()).default({})
     }
   },
   async ({ apiKey, templateId, params }) => {
