@@ -6,6 +6,7 @@ import { prisma } from "../db.js";
 import { getHotelOpenAIClient, getVectorStoresApi, resolveHotelOpenAIConfig } from "../lib/openai.js";
 
 type UploadableFile = Awaited<ReturnType<typeof toFile>>;
+type FilePurpose = "assistants" | "batch" | "fine-tune" | "vision" | "user_data" | "evals";
 
 const CreateVectorStoreSchema = z.object({
   name: z.string().min(1).optional(),
@@ -440,7 +441,9 @@ export async function ragRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "invalid_file", details: String(err?.message ?? err) });
       }
       const { files, fields } = collected;
-      const purpose = (fields.purpose as "fine-tune" | "fine-tune-results" | undefined) ?? "fine-tune";
+      const rawPurpose = (fields.purpose ?? "").trim().toLowerCase();
+      const allowedPurposes: FilePurpose[] = ["assistants", "batch", "fine-tune", "vision", "user_data", "evals"];
+      const purpose = (allowedPurposes.includes(rawPurpose as FilePurpose) ? rawPurpose : "fine-tune") as FilePurpose;
       if (!files.length) {
         return reply.code(400).send({ error: "no_files_uploaded" });
       }
