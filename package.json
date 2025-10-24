@@ -20,6 +20,7 @@
   "dependencies": {
     "@fastify/cors": "^11.1.0",
     "@fastify/jwt": "^10.0.0",
+    "@fastify/multipart": "^9.0.0",
     "@modelcontextprotocol/sdk": "^1.18.1",
     "@prisma/client": "^6.16.2",
     "@xmldom/xmldom": "^0.8.11",
@@ -29,7 +30,8 @@
     "modbus-serial": "8.0.21-no-serial-port",
     "nodemailer": "^7.0.6",
     "xpath": "^0.0.34",
-    "zod": "3.23.8"
+    "zod": "3.23.8",
+    "openai": "^4.67.1"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

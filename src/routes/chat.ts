@@ -8,6 +8,7 @@ import { getPostReplySuggestions } from "../suggestions/engine.js";
 import { mcpManager } from "../mcp/manager.js";
 import type { ChatMessage } from "../providers/types.js";
 import { injectBrevoKeyIfNeeded } from "../lib/byok.js";
+import { getHotelOpenAIClient, searchVectorStore } from "../lib/openai.js";
 
 type ProviderName = "openai" | "deepseek" | "perplexity";
 
@@ -20,7 +21,14 @@ const ChatBody = z.object({
     serverId: z.string(),
     name: z.string(),
     args: z.record(z.string(), z.unknown()).default({})
-  }).optional()
+  }).optional(),
+  knowledge: z
+    .object({
+      enabled: z.boolean().optional(),
+      vectorStoreId: z.string().optional(),
+      topK: z.coerce.number().int().min(1).max(20).optional()
+    })
+    .optional()
 });
 
 /** Adapt messages for a provider that doesn't accept role: "tool".
@@ -45,7 +53,7 @@ function adaptMessagesForProvider(
 
 export async function chatRoutes(app: FastifyInstance) {
   app.post("/chat", { preHandler: app.authenticate }, async (req: any, reply) => {
-    const { conversationId, provider, model, messages, tool } = ChatBody.parse(req.body || {});
+    const { conversationId, provider, model, messages, tool, knowledge } = ChatBody.parse(req.body || {});
     if (!messages?.length) return reply.code(400).send({ error: "messages is required" });
 
     // 1) Load user (hotelId used for policy)
@@ -149,6 +157,83 @@ export async function chatRoutes(app: FastifyInstance) {
     // 7.5) Optional MCP tool execution (pre-LLM)
     // We'll add the tool result to the *chat context*, but send it to the provider as a "system" message (not "tool")
     let messagesForLLM = [...messages];
+    let knowledgeContextForDB: string | undefined;
+    let knowledgeUsage: { vectorStoreId: string; chunkCount: number } | undefined;
+
+    if (knowledge?.enabled) {
+      if ((chosenProvider as ProviderName) !== "openai") {
+        return reply.code(400).send({ error: "vector_store_not_supported_for_provider" });
+      }
+
+      const storeRecord = knowledge.vectorStoreId
+        ? await prisma.hotelVectorStore.findFirst({
+            where: { id: knowledge.vectorStoreId, hotelId: hotelIdForPolicy }
+          })
+        : await prisma.hotelVectorStore.findFirst({
+            where: { hotelId: hotelIdForPolicy, isDefault: true }
+          }) ||
+          (await prisma.hotelVectorStore.findFirst({
+            where: { hotelId: hotelIdForPolicy },
+            orderBy: { createdAt: "asc" }
+          }));
+
+      if (!storeRecord) {
+        return reply.code(400).send({ error: "vector_store_unavailable" });
+      }
+
+      const latestUserMessage = [...messages].reverse().find((m) => m.role === "user");
+      if (!latestUserMessage) {
+        return reply.code(400).send({ error: "no_user_message_for_retrieval" });
+      }
+
+      let openaiClient;
+      try {
+        openaiClient = await getHotelOpenAIClient(hotelIdForPolicy);
+      } catch (err: any) {
+        return reply.code(400).send({ error: "openai_credential_missing", details: String(err?.message ?? err) });
+      }
+
+      try {
+        const matches = await searchVectorStore(openaiClient, {
+          vectorStoreId: storeRecord.openaiId,
+          query: latestUserMessage.content,
+          maxResults: knowledge.topK ?? 5
+        });
+
+        const chunks = matches
+          .map((item: any, idx: number) => {
+            const texts = (item?.content ?? [])
+              .map((c: any) => {
+                if (!c) return null;
+                if (typeof c === "string") return c.trim();
+                if (typeof c.text === "string") return c.text.trim();
+                if (typeof c.text?.value === "string") return c.text.value.trim();
+                return null;
+              })
+              .filter((txt: string | null): txt is string => !!txt);
+            if (!texts.length) return null;
+            const rawScore = (item as any)?.score;
+            const score =
+              typeof rawScore === "number"
+                ? rawScore.toFixed(3)
+                : rawScore != null
+                ? String(rawScore)
+                : "n/a";
+            return `Source ${idx + 1} (score ${score}):\n${texts.join("\n")}`;
+          })
+          .filter((chunk): chunk is string => typeof chunk === "string");
+
+        if (chunks.length) {
+          const contextMessage = `Use the retrieved knowledge when relevant.\n\n${chunks.join("\n\n")}`;
+          messagesForLLM.unshift({ role: "system", content: contextMessage });
+          knowledgeContextForDB = contextMessage;
+          knowledgeUsage = { vectorStoreId: storeRecord.id, chunkCount: chunks.length };
+        }
+      } catch (err: any) {
+        req.log.error({ err }, "vector store query failed");
+        return reply.code(500).send({ error: "vector_store_query_failed", details: String(err?.message ?? err) });
+      }
+    }
     let toolTextForDB: string | undefined; // stored in DB as role "tool"
     let toolContextForModel: string | undefined; // what the model actually sees
 
@@ -263,6 +348,7 @@ export async function chatRoutes(app: FastifyInstance) {
     // Store inbound user + (optional) tool messages exactly as they happened
     const inbound = [...messages];
     if (toolTextForDB) inbound.push({ role: "tool", content: toolTextForDB });
+    if (knowledgeContextForDB) inbound.push({ role: "system", content: knowledgeContextForDB });
     if (inbound.length) {
       await prisma.message.createMany({
         data: inbound.map(m => ({
@@ -287,7 +373,8 @@ export async function chatRoutes(app: FastifyInstance) {
       model: chosenModel,
       content: result.content,
       usage: result.usage,
-      nextSuggestions
+      nextSuggestions,
+      knowledge: knowledgeUsage ?? null
     };
   });
 

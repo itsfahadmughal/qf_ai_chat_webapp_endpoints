@@ -1,11 +1,11 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL") // pooled
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // pooled
   directUrl = env("DIRECT_URL") // direct
 }
 
@@ -33,6 +33,7 @@ model Hotel {
   HotelProviderCredential HotelProviderCredential[]
   MCPServer               MCPServer[]
   promptCategories        PromptCategory[]
+  vectorStores            HotelVectorStore[]
 }
 
 model HotelProviderToggle {
@@ -94,14 +95,14 @@ model Message {
 }
 
 model PromptCategory {
-  id       String  @id @default(cuid())
-  hotelId  String
-  hotel    Hotel   @relation(fields: [hotelId], references: [id])
-  name     String
-  prompts  Prompt[]
+  id      String   @id @default(cuid())
+  hotelId String
+  hotel   Hotel    @relation(fields: [hotelId], references: [id])
+  name    String
+  prompts Prompt[]
+
   @@unique([hotelId, name]) // used by upsert
 }
-
 
 model Prompt {
   id         String          @id @default(cuid())
@@ -252,4 +253,19 @@ model ToolCallLog {
   @@index([hotelId])
   @@index([serverId])
   @@index([conversationId])
+}
+
+model HotelVectorStore {
+  id        String   @id @default(cuid())
+  hotelId   String
+  hotel     Hotel    @relation(fields: [hotelId], references: [id])
+  provider  Provider @default(openai)
+  openaiId  String   @unique
+  name      String?
+  metadata  Json?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([hotelId])
 }
