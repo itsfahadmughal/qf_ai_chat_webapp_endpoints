@@ -14,6 +14,7 @@ import { feedbackRoutes } from "./routes/feedback.js";
 import { suggestionsRoutes } from "./routes/suggestions.js";
 import { mcpRoutes } from "./routes/mcp.js";
 import { ragRoutes } from "./routes/rag.js";
+import { userRoutes } from "./routes/users.js";
 
 const app = Fastify({ logger: true });
 
@@ -39,6 +40,7 @@ await feedbackRoutes(app);
 await suggestionsRoutes(app);
 await mcpRoutes(app);
 await ragRoutes(app);
+await userRoutes(app);
 
 const port = Number(env.PORT || 3000);
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
