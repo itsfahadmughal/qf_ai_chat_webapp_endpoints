@@ -330,25 +330,28 @@ export async function promptRoutes(app: FastifyInstance) {
       : { promptId: id, feedbackScore: null, reaction: null, updatedAt: null };
   });
 
-  app.get("/prompts/:id?/feedbacks", { preHandler: app.authenticate }, async (req: any, reply) => {
+  async function listAuthorFeedbacks(req: any, reply: any, promptId?: string) {
     const { user } = await assertHotelAndProvider(req, reply);
     if (reply.sent) return;
-    const params = req.params as { id?: string };
-    const promptId = params?.id?.trim() ?? "";
-    const hasPromptId = promptId.length > 0;
+
+    const hasPromptId = Boolean(promptId?.trim());
+    const normalizedId = hasPromptId ? promptId!.trim() : "";
 
     let prompt: { id: string; title: string } | null = null;
     if (hasPromptId) {
       prompt = await prisma.prompt.findFirst({
-        where: { id: promptId, hotelId: user.hotelId, authorId: user.id },
+        where: { id: normalizedId, hotelId: user.hotelId, authorId: user.id },
         select: { id: true, title: true }
       });
-      if (!prompt) return reply.code(404).send({ error: "Prompt not found" });
+      if (!prompt) {
+        reply.code(404).send({ error: "Prompt not found" });
+        return;
+      }
     }
 
     const feedbacks = await (prisma as any).promptFeedback.findMany({
       where: hasPromptId
-        ? { promptId, prompt: { authorId: user.id } }
+        ? { promptId: normalizedId, prompt: { authorId: user.id } }
         : { prompt: { hotelId: user.hotelId, authorId: user.id } },
       orderBy: { createdAt: "desc" },
       select: {
@@ -382,6 +385,15 @@ export async function promptRoutes(app: FastifyInstance) {
             }
       )
     };
+  }
+
+  app.get("/prompts/:id/feedbacks", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const { id } = req.params as { id: string };
+    return listAuthorFeedbacks(req, reply, id);
+  });
+
+  app.get("/prompts/feedbacks", { preHandler: app.authenticate }, async (req: any, reply) => {
+    return listAuthorFeedbacks(req, reply);
   });
 
   // Usage summary (mostly used / saved / rarely used)
