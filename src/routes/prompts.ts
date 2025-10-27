@@ -330,38 +330,57 @@ export async function promptRoutes(app: FastifyInstance) {
       : { promptId: id, feedbackScore: null, reaction: null, updatedAt: null };
   });
 
-  app.get("/prompts/:id/feedbacks", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.get("/prompts/:id?/feedbacks", { preHandler: app.authenticate }, async (req: any, reply) => {
     const { user } = await assertHotelAndProvider(req, reply);
     if (reply.sent) return;
-    const { id } = req.params as { id: string };
+    const params = req.params as { id?: string };
+    const promptId = params?.id?.trim() ?? "";
+    const hasPromptId = promptId.length > 0;
 
-    const prompt = await prisma.prompt.findFirst({
-      where: { id, hotelId: user.hotelId },
-      select: { id: true, title: true }
-    });
-    if (!prompt) return reply.code(404).send({ error: "Prompt not found" });
+    let prompt: { id: string; title: string } | null = null;
+    if (hasPromptId) {
+      prompt = await prisma.prompt.findFirst({
+        where: { id: promptId, hotelId: user.hotelId, authorId: user.id },
+        select: { id: true, title: true }
+      });
+      if (!prompt) return reply.code(404).send({ error: "Prompt not found" });
+    }
 
     const feedbacks = await (prisma as any).promptFeedback.findMany({
-      where: { promptId: id },
+      where: hasPromptId
+        ? { promptId, prompt: { authorId: user.id } }
+        : { prompt: { hotelId: user.hotelId, authorId: user.id } },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
         feedbackScore: true,
         reaction: true,
         createdAt: true,
+        prompt: { select: { id: true, title: true } },
         user: { select: { id: true, email: true, role: true } }
       }
     });
 
     return {
-      prompt: { id: prompt.id, title: prompt.title },
-      feedbacks: feedbacks.map((fb: any) => ({
-        id: fb.id,
-        feedbackScore: fb.feedbackScore,
-        reaction: fb.reaction ?? null,
-        createdAt: fb.createdAt,
-        user: fb.user
-      }))
+      prompt,
+      feedbacks: feedbacks.map((fb: any) =>
+        hasPromptId
+          ? {
+              id: fb.id,
+              feedbackScore: fb.feedbackScore,
+              reaction: fb.reaction ?? null,
+              createdAt: fb.createdAt,
+              user: fb.user
+            }
+          : {
+              id: fb.id,
+              feedbackScore: fb.feedbackScore,
+              reaction: fb.reaction ?? null,
+              createdAt: fb.createdAt,
+              user: fb.user,
+              prompt: fb.prompt
+            }
+      )
     };
   });
 
