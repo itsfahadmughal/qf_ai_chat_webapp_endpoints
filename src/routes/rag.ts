@@ -8,23 +8,35 @@ import { getHotelOpenAIClient, getVectorStoresApi, resolveHotelOpenAIConfig } fr
 type UploadableFile = Awaited<ReturnType<typeof toFile>>;
 type FilePurpose = "assistants" | "batch" | "fine-tune" | "vision" | "user_data" | "evals";
 
+const prismaAny = prisma as any;
+
 const CreateVectorStoreSchema = z.object({
+  hotelId: z.string().min(1, "hotelId is required"),
+  departmentId: z.string().min(1, "departmentId is required"),
   name: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.string()).optional(),
   makeDefault: z.boolean().optional()
 });
 
 const ListVectorStoresQuery = z.object({
+  hotelId: z.string().min(1, "hotelId is required"),
+  departmentId: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional()
 });
 
 const ListVectorStoreFilesQuery = z.object({
+  hotelId: z.string().min(1, "hotelId is required"),
   limit: z.coerce.number().int().min(1).max(1000).optional(),
   after: z.string().optional()
 });
 
 const FineTuneListQuery = z.object({
+  hotelId: z.string().min(1, "hotelId is required"),
   purpose: z.enum(["fine-tune", "fine-tune-results", "assistants", "batch", "vision"]).optional()
+});
+
+const HotelScopedBody = z.object({
+  hotelId: z.string().min(1, "hotelId is required")
 });
 
 async function collectMultipartFiles(req: any): Promise<{
@@ -54,18 +66,6 @@ async function collectMultipartFiles(req: any): Promise<{
   return { files, fields };
 }
 
-async function requireHotelId(req: any, reply: any): Promise<string | null> {
-  const user = await prisma.user.findUnique({
-    where: { id: req.user.id },
-    select: { hotelId: true }
-  });
-  if (!user?.hotelId) {
-    reply.code(400).send({ error: "user_has_no_hotel" });
-    return null;
-  }
-  return user.hotelId;
-}
-
 async function getHotelOpenAIClientOrError(hotelId: string, reply: any) {
   try {
     return await getHotelOpenAIClient(hotelId);
@@ -77,11 +77,11 @@ async function getHotelOpenAIClientOrError(hotelId: string, reply: any) {
 
 async function setDefaultVectorStore(hotelId: string, vectorStoreId: string) {
   await prisma.$transaction([
-    prisma.hotelVectorStore.updateMany({
+    prismaAny.hotelVectorStore.updateMany({
       where: { hotelId },
       data: { isDefault: false }
     }),
-    prisma.hotelVectorStore.update({
+    prismaAny.hotelVectorStore.update({
       where: { id: vectorStoreId },
       data: { isDefault: true }
     })
@@ -96,6 +96,13 @@ function formatVectorStoreRecord(record: any, remote: any, credentialAvailable: 
     name: record.name,
     metadata: record.metadata,
     isDefault: record.isDefault,
+    departmentId: record.departmentId ?? null,
+    department: record.department
+      ? {
+          id: record.department.id,
+          name: record.department.name
+        }
+      : null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     credentialAvailable,
@@ -103,57 +110,113 @@ function formatVectorStoreRecord(record: any, remote: any, credentialAvailable: 
   };
 }
 
+function normalizeString(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length) {
+    return normalizeString(value[0]);
+  }
+  return null;
+}
+
+async function ensureDepartmentForHotel(hotelId: string, departmentId: string, reply: any) {
+  const department = await prismaAny.department.findFirst({
+    where: { id: departmentId, hotelId },
+    select: { id: true, name: true, isActive: true }
+  });
+  if (!department) {
+    reply.code(404).send({ error: "department_not_found" });
+    return null;
+  }
+  if (!department.isActive) {
+    reply.code(403).send({ error: "department_inactive" });
+    return null;
+  }
+  return department;
+}
+
+async function loadVectorStoreForHotel(id: string, hotelId: string) {
+  return prismaAny.hotelVectorStore.findFirst({
+    where: { id, hotelId },
+    include: { department: { select: { id: true, name: true } } }
+  });
+}
+
 export async function ragRoutes(app: FastifyInstance) {
-  app.post("/rag/vector-stores", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.post("/rag/vector-stores", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
+      const body = CreateVectorStoreSchema.parse(req.body ?? {});
+      const { hotelId, departmentId } = body;
+
+      const department = await ensureDepartmentForHotel(hotelId, departmentId, reply);
+      if (!department) return;
+
+      const existingForDepartment = await prismaAny.hotelVectorStore.findFirst({
+        where: { hotelId, departmentId }
+      });
+      if (existingForDepartment) {
+        return reply.code(409).send({ error: "department_vector_store_exists" });
+      }
 
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
       if (!client) return;
 
       const vectorStores = getVectorStoresApi(client);
-      const body = CreateVectorStoreSchema.parse(req.body ?? {});
       const vectorStore = await vectorStores.create({
         name: body.name ?? `hotel-${hotelId}-store`,
-        metadata: body.metadata
+        metadata: {
+          ...((body.metadata as Record<string, string> | undefined) ?? {}),
+          hotelId,
+          departmentId
+        }
       });
 
-      const existing = await prisma.hotelVectorStore.findUnique({
+      const existing = await prismaAny.hotelVectorStore.findUnique({
         where: { openaiId: vectorStore.id }
       });
 
       let record = existing
-        ? await prisma.hotelVectorStore.update({
+        ? await prismaAny.hotelVectorStore.update({
             where: { openaiId: vectorStore.id },
             data: {
               hotelId,
-              name: vectorStore.name ?? body.name ?? existing.name,
-              metadata: vectorStore.metadata ?? body.metadata ?? existing.metadata
-            }
+              name: body.name ?? vectorStore.name ?? existing.name,
+              metadata: body.metadata ?? vectorStore.metadata ?? existing.metadata,
+              departmentId
+            },
+            include: { department: { select: { id: true, name: true } } }
           })
-        : await prisma.hotelVectorStore.create({
+        : await prismaAny.hotelVectorStore.create({
             data: {
               hotelId,
               provider: "openai",
               openaiId: vectorStore.id,
-              name: vectorStore.name ?? body.name ?? null,
-              metadata: vectorStore.metadata ?? body.metadata
-            }
+              name: body.name ?? vectorStore.name ?? null,
+              metadata: body.metadata ?? vectorStore.metadata ?? null,
+              departmentId,
+              isDefault: false
+            },
+            include: { department: { select: { id: true, name: true } } }
           });
 
       const shouldMakeDefault =
         body.makeDefault ||
-        !(await prisma.hotelVectorStore.count({ where: { hotelId, isDefault: true } }));
+        !(await prismaAny.hotelVectorStore.count({ where: { hotelId, isDefault: true } }));
 
       if (shouldMakeDefault) {
         await setDefaultVectorStore(hotelId, record.id);
-        record = await prisma.hotelVectorStore.findUniqueOrThrow({ where: { id: record.id } });
+        record = await prismaAny.hotelVectorStore.findUniqueOrThrow({
+          where: { id: record.id },
+          include: { department: { select: { id: true, name: true } } }
+        });
       }
 
+      const credential = await resolveHotelOpenAIConfig(hotelId);
       return {
         vectorStore,
-        record: formatVectorStoreRecord(record, vectorStore, true)
+        record: formatVectorStoreRecord(record, vectorStore, Boolean(credential.apiKey))
       };
     } catch (err: any) {
       if (err instanceof ZodError) {
@@ -164,16 +227,24 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/rag/vector-stores", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.get("/rag/vector-stores", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
-
       const query = ListVectorStoresQuery.parse(req.query ?? {});
-      const stores = await prisma.hotelVectorStore.findMany({
-        where: { hotelId },
+      const { hotelId, departmentId } = query;
+
+      if (departmentId) {
+        const department = await ensureDepartmentForHotel(hotelId, departmentId, reply);
+        if (!department) return;
+      }
+
+      const stores = await prismaAny.hotelVectorStore.findMany({
+        where: {
+          hotelId,
+          ...(departmentId ? { departmentId } : {})
+        },
         orderBy: { createdAt: "desc" },
-        take: query.limit ?? undefined
+        take: query.limit ?? undefined,
+        include: { department: { select: { id: true, name: true } } }
       });
 
       const cfg = await resolveHotelOpenAIConfig(hotelId);
@@ -183,7 +254,8 @@ export async function ragRoutes(app: FastifyInstance) {
         try {
           const client = await getHotelOpenAIClient(hotelId);
           vectorStores = getVectorStoresApi(client);
-        } catch {
+        } catch (err) {
+          req.log.warn({ err }, "failed to initialize OpenAI client for vector store list");
           vectorStores = null;
         }
       }
@@ -211,15 +283,12 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/rag/vector-stores/:id", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.get("/rag/vector-stores/:id", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
       const { id } = req.params as { id: string };
+      const { hotelId } = HotelScopedBody.parse(req.query ?? {});
 
-      const record = await prisma.hotelVectorStore.findFirst({
-        where: { id, hotelId }
-      });
+      const record = await loadVectorStoreForHotel(id, hotelId);
       if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
 
       const cfg = await resolveHotelOpenAIConfig(hotelId);
@@ -251,16 +320,13 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/rag/vector-stores/:id/files", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.get("/rag/vector-stores/:id/files", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
       const { id } = req.params as { id: string };
       const query = ListVectorStoreFilesQuery.parse(req.query ?? {});
+      const { hotelId } = query;
 
-      const record = await prisma.hotelVectorStore.findFirst({
-        where: { id, hotelId }
-      });
+      const record = await loadVectorStoreForHotel(id, hotelId);
       if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
 
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
@@ -286,20 +352,9 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/rag/vector-stores/:id/files", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.post("/rag/vector-stores/:id/files", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
       const { id } = req.params as { id: string };
-
-      const record = await prisma.hotelVectorStore.findFirst({
-        where: { id, hotelId }
-      });
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
-
-      const client = await getHotelOpenAIClientOrError(hotelId, reply);
-      if (!client) return;
-      const vectorStores = getVectorStoresApi(client);
 
       let collected;
       try {
@@ -313,11 +368,25 @@ export async function ragRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "no_files_uploaded" });
       }
 
+      const hotelId = normalizeString(fields.hotelId);
+      if (!hotelId) {
+        return reply.code(400).send({ error: "hotel_id_required" });
+      }
+
+      const record = await loadVectorStoreForHotel(id, hotelId);
+      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+
+      const client = await getHotelOpenAIClientOrError(hotelId, reply);
+      if (!client) return;
+      const vectorStores = getVectorStoresApi(client);
+
       const baseAttributes: Record<string, string> = {};
-      const setAttr = (key: string, value: string | undefined) => {
-        const trimmed = value?.trim();
+      const setAttr = (key: string, value: string | undefined | null) => {
+        const trimmed = value ? value.trim() : "";
         if (trimmed) baseAttributes[key] = trimmed;
       };
+      setAttr("hotelId", hotelId);
+      setAttr("departmentId", record.departmentId ?? null);
       setAttr("title", fields.title);
       setAttr("language", fields.language);
       setAttr("module", fields.module);
@@ -364,29 +433,31 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/rag/vector-stores/:id/default", { preHandler: app.authenticate }, async (req: any, reply) => {
-    const hotelId = await requireHotelId(req, reply);
-    if (!hotelId) return;
-    const { id } = req.params as { id: string };
+  app.patch("/rag/vector-stores/:id/default", async (req: any, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const { hotelId } = HotelScopedBody.parse(req.body ?? {});
 
-    const record = await prisma.hotelVectorStore.findFirst({
-      where: { id, hotelId }
-    });
-    if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      const record = await loadVectorStoreForHotel(id, hotelId);
+      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
 
-    await setDefaultVectorStore(hotelId, record.id);
-    return { ok: true };
+      await setDefaultVectorStore(hotelId, record.id);
+      return { ok: true };
+    } catch (err: any) {
+      if (err instanceof ZodError) {
+        return reply.code(400).send({ error: "validation_error", details: err.errors });
+      }
+      req.log.error({ err }, "vector store default update failed");
+      return reply.code(500).send({ error: "vector_store_default_failed", details: String(err?.message ?? err) });
+    }
   });
 
-  app.delete("/rag/vector-stores/:id", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.delete("/rag/vector-stores/:id", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
       const { id } = req.params as { id: string };
+      const { hotelId } = HotelScopedBody.parse(req.query ?? {});
 
-      const record = await prisma.hotelVectorStore.findFirst({
-        where: { id, hotelId }
-      });
+      const record = await loadVectorStoreForHotel(id, hotelId);
       if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
 
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
@@ -405,15 +476,15 @@ export async function ragRoutes(app: FastifyInstance) {
         }
       }
 
-      await prisma.hotelVectorStore.delete({ where: { id: record.id } });
+      await prismaAny.hotelVectorStore.delete({ where: { id: record.id } });
 
       if (record.isDefault) {
-        const next = await prisma.hotelVectorStore.findFirst({
+        const next = await prismaAny.hotelVectorStore.findFirst({
           where: { hotelId },
           orderBy: { createdAt: "asc" }
         });
         if (next) {
-          await prisma.hotelVectorStore.update({
+          await prismaAny.hotelVectorStore.update({
             where: { id: next.id },
             data: { isDefault: true }
           });
@@ -427,13 +498,8 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/openai/fine-tuning/files", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.post("/openai/fine-tuning/files", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
-      const client = await getHotelOpenAIClientOrError(hotelId, reply);
-      if (!client) return;
-
       let collected;
       try {
         collected = await collectMultipartFiles(req);
@@ -441,6 +507,14 @@ export async function ragRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "invalid_file", details: String(err?.message ?? err) });
       }
       const { files, fields } = collected;
+      const hotelId = normalizeString(fields.hotelId);
+      if (!hotelId) {
+        return reply.code(400).send({ error: "hotel_id_required" });
+      }
+
+      const client = await getHotelOpenAIClientOrError(hotelId, reply);
+      if (!client) return;
+
       const rawPurpose = (fields.purpose ?? "").trim().toLowerCase();
       const allowedPurposes: FilePurpose[] = ["assistants", "batch", "fine-tune", "vision", "user_data", "evals"];
       const purpose = (allowedPurposes.includes(rawPurpose as FilePurpose) ? rawPurpose : "fine-tune") as FilePurpose;
@@ -448,7 +522,7 @@ export async function ragRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "no_files_uploaded" });
       }
 
-      const uploads = [];
+      const uploads: any[] = [];
       for (const f of files) {
         const uploaded = await client.files.create({
           purpose,
@@ -464,12 +538,11 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/openai/fine-tuning/files", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.get("/openai/fine-tuning/files", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
-
       const query = FineTuneListQuery.parse(req.query ?? {});
+      const { hotelId } = query;
+
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
       if (!client) return;
 
@@ -486,11 +559,10 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/openai/fine-tuning/files/:id", { preHandler: app.authenticate }, async (req: any, reply) => {
+  app.get("/openai/fine-tuning/files/:id", async (req: any, reply) => {
     try {
-      const hotelId = await requireHotelId(req, reply);
-      if (!hotelId) return;
       const { id } = req.params as { id: string };
+      const { hotelId } = HotelScopedBody.parse(req.query ?? {});
 
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
       if (!client) return;

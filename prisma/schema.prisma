@@ -27,6 +27,7 @@ model Hotel {
   isActive                Boolean                   @default(true)
   createdAt               DateTime                  @default(now())
   users                   User[]
+  departments             Department[]
   providers               HotelProviderToggle[]
   conversations           Conversation[]
   prompts                 Prompt[]
@@ -55,9 +56,12 @@ model User {
   isActive           Boolean              @default(true)
   hotelId            String
   hotel              Hotel                @relation(fields: [hotelId], references: [id])
+  departmentId       String?
+  department         Department?          @relation(fields: [departmentId], references: [id])
   createdAt          DateTime             @default(now())
   conversations      Conversation[]
   prompts            Prompt[]
+  assignedPrompts    Prompt[]             @relation("PromptAssignedUser")
   preference         UserPreference?      @relation("UserPreference_user")
   PasswordResetToken PasswordResetToken[]
   EmailOtp           EmailOtp[]
@@ -73,6 +77,8 @@ model Conversation {
   user        User          @relation(fields: [userId], references: [id])
   hotelId     String
   hotel       Hotel         @relation(fields: [hotelId], references: [id])
+  promptId    String?
+  prompt      Prompt?       @relation(fields: [promptId], references: [id])
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
   provider    Provider
@@ -111,6 +117,10 @@ model Prompt {
   hotel      Hotel            @relation(fields: [hotelId], references: [id])
   authorId   String
   author     User             @relation(fields: [authorId], references: [id])
+  assignedUserId     String?
+  assignedUser       User?            @relation("PromptAssignedUser", fields: [assignedUserId], references: [id])
+  departmentId       String?
+  department         Department?      @relation(fields: [departmentId], references: [id])
   title      String
   body       String // the actual prompt text
   categoryId String?
@@ -121,8 +131,11 @@ model Prompt {
   createdAt  DateTime         @default(now())
   updatedAt  DateTime         @updatedAt
   feedback   PromptFeedback[]
+  conversations    Conversation[]
 
   @@index([hotelId, archived])
+  @@index([assignedUserId])
+  @@index([departmentId])
 }
 
 model UserPreference {
@@ -278,6 +291,8 @@ model HotelVectorStore {
   hotelId   String
   hotel     Hotel    @relation(fields: [hotelId], references: [id])
   provider  Provider @default(openai)
+  departmentId String? @unique
+  department   Department? @relation(fields: [departmentId], references: [id])
   openaiId  String   @unique
   name      String?
   metadata  Json?
@@ -285,5 +300,22 @@ model HotelVectorStore {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([hotelId])
+}
+
+model Department {
+  id          String             @id @default(cuid())
+  hotelId     String
+  hotel       Hotel              @relation(fields: [hotelId], references: [id])
+  name        String
+  description String?
+  isActive    Boolean            @default(true)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  users       User[]
+  prompts     Prompt[]
+  vectorStore HotelVectorStore?
+
+  @@unique([hotelId, name])
   @@index([hotelId])
 }

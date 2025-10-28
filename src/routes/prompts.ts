@@ -13,6 +13,8 @@ const PromptExportQuery = z.object({
   format: z.enum(["json", "jsonl", "word"]).default("json")
 });
 
+const prismaAny = prisma as any;
+
 type PromptFeedbackStats = {
   feedbackCount: number;
   likeCount: number;
@@ -91,9 +93,11 @@ export async function promptRoutes(app: FastifyInstance) {
         title: z.string().min(1),
         body: z.string().min(1),
         categoryId: z.string().optional(),
-        categoryName: z.string().optional(), 
+        categoryName: z.string().optional(),
         tags: z.array(z.string()).optional(),
-        version: z.string().optional()
+        version: z.string().optional(),
+        assignedUserId: z.string().optional(),
+        departmentId: z.string().optional()
       }).parse(req.body);
 
       // Resolve category
@@ -116,7 +120,31 @@ export async function promptRoutes(app: FastifyInstance) {
         resolvedCategoryId = cat.id;
       }
 
-      return prisma.prompt.create({
+      let assignedUserId: string | null = null;
+      if (body.assignedUserId) {
+        const assignee = await prisma.user.findFirst({
+          where: { id: body.assignedUserId, hotelId: user.hotelId },
+          select: { id: true }
+        });
+        if (!assignee) {
+          return reply.code(400).send({ error: "Invalid assignedUserId for this hotel" });
+        }
+        assignedUserId = assignee.id;
+      }
+
+      let departmentId: string | null = null;
+      if (body.departmentId) {
+        const dept = await prismaAny.department.findFirst({
+          where: { id: body.departmentId, hotelId: user.hotelId },
+          select: { id: true }
+        });
+        if (!dept) {
+          return reply.code(400).send({ error: "Invalid departmentId for this hotel" });
+        }
+        departmentId = dept.id;
+      }
+
+      return prismaAny.prompt.create({
         data: {
           hotelId: user.hotelId,
           authorId: user.id,
@@ -124,7 +152,9 @@ export async function promptRoutes(app: FastifyInstance) {
           body: body.body,
           categoryId: resolvedCategoryId,
           tags: body.tags ?? [],
-          version: body.version ?? null
+          version: body.version ?? null,
+          assignedUserId,
+          departmentId
         }
       });
     }
@@ -141,7 +171,7 @@ export async function promptRoutes(app: FastifyInstance) {
       archived: z.coerce.boolean().optional()
     }).parse(req.query);
 
-    const prompts = await prisma.prompt.findMany({
+    const prompts = await prismaAny.prompt.findMany({
       where: {
         hotelId: user.hotelId,
         archived: q.archived ?? false,
@@ -159,13 +189,96 @@ export async function promptRoutes(app: FastifyInstance) {
       orderBy: { updatedAt: "desc" },
       include: {
         author: { select: { id: true, email: true } },
-        category: { select: { id: true, name: true } }
+        category: { select: { id: true, name: true } },
+        assignedUser: { select: { id: true, email: true } },
+        department: { select: { id: true, name: true } }
       } 
     });
+    const promptRecords = prompts as any[];
 
-    const statsMap = await fetchPromptFeedbackStats(prompts.map((p) => p.id));
+    const statsMap = await fetchPromptFeedbackStats(promptRecords.map((p: any) => p.id));
 
-    return prompts.map((prompt) => {
+    return promptRecords.map((prompt: any) => {
+      const stats = statsMap.get(prompt.id);
+      return {
+        ...prompt,
+        feedbackCount: stats?.feedbackCount ?? 0,
+        usageTag: resolveUsageTag(stats)
+      };
+    });
+  });
+
+  app.get("/prompts/by-user/:userId", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const { user } = await assertHotelAndProvider(req, reply);
+    if (reply.sent) return;
+    const { userId } = req.params as { userId: string };
+
+    const assignee = await prisma.user.findFirst({
+      where: { id: userId, hotelId: user.hotelId },
+      select: { id: true }
+    });
+    if (!assignee) {
+      return reply.code(404).send({ error: "user_not_found" });
+    }
+
+    const promptRecords = (await prismaAny.prompt.findMany({
+      where: {
+        hotelId: user.hotelId,
+        assignedUserId: userId,
+        archived: false
+      },
+      orderBy: { updatedAt: "desc" },
+      include: {
+        author: { select: { id: true, email: true } },
+        category: { select: { id: true, name: true } },
+        assignedUser: { select: { id: true, email: true } },
+        department: { select: { id: true, name: true } }
+      }
+    })) as any[];
+
+    const statsMap = await fetchPromptFeedbackStats(promptRecords.map((p: any) => p.id));
+
+    return promptRecords.map((prompt: any) => {
+      const stats = statsMap.get(prompt.id);
+      return {
+        ...prompt,
+        feedbackCount: stats?.feedbackCount ?? 0,
+        usageTag: resolveUsageTag(stats)
+      };
+    });
+  });
+
+  app.get("/prompts/by-department/:departmentId", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const { user } = await assertHotelAndProvider(req, reply);
+    if (reply.sent) return;
+    const { departmentId } = req.params as { departmentId: string };
+
+    const department = await prismaAny.department.findFirst({
+      where: { id: departmentId, hotelId: user.hotelId },
+      select: { id: true }
+    });
+    if (!department) {
+      return reply.code(404).send({ error: "department_not_found" });
+    }
+
+    const promptRecords = (await prismaAny.prompt.findMany({
+      where: {
+        hotelId: user.hotelId,
+        departmentId,
+        archived: false
+      },
+      orderBy: { updatedAt: "desc" },
+      include: {
+        author: { select: { id: true, email: true } },
+        category: { select: { id: true, name: true } },
+        assignedUser: { select: { id: true, email: true } },
+        department: { select: { id: true, name: true } }
+      }
+    })) as any[];
+
+    const statsMap = await fetchPromptFeedbackStats(promptRecords.map((p: any) => p.id));
+
+    return promptRecords.map((prompt: any) => {
       const stats = statsMap.get(prompt.id);
       return {
         ...prompt,
@@ -181,18 +294,21 @@ export async function promptRoutes(app: FastifyInstance) {
     if (reply.sent) return;
     const { categoryId } = req.params as { categoryId: string };
 
-    const prompts = await prisma.prompt.findMany({
+    const prompts = await prismaAny.prompt.findMany({
       where: { hotelId: user.hotelId, categoryId, archived: false },
       orderBy: { updatedAt: "desc" },
       include: {
         author: { select: { id: true, email: true } },
-        category: { select: { id: true, name: true } }
+        category: { select: { id: true, name: true } },
+        assignedUser: { select: { id: true, email: true } },
+        department: { select: { id: true, name: true } }
       }
     });
 
-    const statsMap = await fetchPromptFeedbackStats(prompts.map((p) => p.id));
+    const promptRecords = prompts as any[];
+    const statsMap = await fetchPromptFeedbackStats(promptRecords.map((p: any) => p.id));
 
-    return prompts.map((prompt) => {
+    return promptRecords.map((prompt: any) => {
       const stats = statsMap.get(prompt.id);
       return {
         ...prompt,
@@ -208,10 +324,14 @@ export async function promptRoutes(app: FastifyInstance) {
     if (reply.sent) return;
     const { id } = req.params as { id: string };
 
-    const row = await prisma.prompt.findFirst({
+    const row = await prismaAny.prompt.findFirst({
       where: { id, hotelId: user.hotelId },
-      include: { author: { select: { id: true, email: true } },
-      category: { select: { id: true, name: true } } }
+      include: {
+        author: { select: { id: true, email: true } },
+        category: { select: { id: true, name: true } },
+        assignedUser: { select: { id: true, email: true } },
+        department: { select: { id: true, name: true } }
+      }
     });
     if (!row) return reply.code(404).send({ error: "Not found" });
     return row;
@@ -226,17 +346,21 @@ export async function promptRoutes(app: FastifyInstance) {
       if (reply.sent) return;
 
       const { id } = req.params as { id: string };
-      const body = z.object({
-        title: z.string().optional(),
-        body: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        version: z.string().optional(),
-        archived: z.boolean().optional(),
-        categoryId: z.string().nullable().optional()
-      }).parse(req.body);
+      const body = z
+        .object({
+          title: z.string().min(1).optional(),
+          body: z.string().min(1).optional(),
+          tags: z.array(z.string()).optional(),
+          version: z.string().optional(),
+          archived: z.boolean().optional(),
+          categoryId: z.string().nullable().optional(),
+          assignedUserId: z.string().nullable().optional(),
+          departmentId: z.string().nullable().optional()
+        })
+        .parse(req.body ?? {});
 
       // ensure the prompt belongs to the same hotel
-      const existing = await prisma.prompt.findFirst({
+      const existing = await prismaAny.prompt.findFirst({
         where: { id, hotelId: user.hotelId }
       });
       if (!existing) return reply.code(404).send({ error: "Not found" });
@@ -244,7 +368,73 @@ export async function promptRoutes(app: FastifyInstance) {
       // (optional) If you want to restrict to the creator only, uncomment:
       if (existing.authorId !== user.id) return reply.code(403).send({ error: "Only the creator can update this prompt" });
 
-      const updated = await prisma.prompt.update({ where: { id }, data: body });
+      const data: Record<string, any> = {};
+
+      if (body.title !== undefined) data.title = body.title;
+      if (body.body !== undefined) data.body = body.body;
+      if (body.tags !== undefined) data.tags = body.tags;
+      if (body.version !== undefined) data.version = body.version;
+      if (body.archived !== undefined) data.archived = body.archived;
+
+      if (body.categoryId !== undefined) {
+        if (body.categoryId === null) {
+          data.categoryId = null;
+        } else {
+          const category = await prisma.promptCategory.findFirst({
+            where: { id: body.categoryId, hotelId: user.hotelId },
+            select: { id: true }
+          });
+          if (!category) {
+            return reply.code(400).send({ error: "Invalid categoryId for this hotel" });
+          }
+          data.categoryId = category.id;
+        }
+      }
+
+      if (body.assignedUserId !== undefined) {
+        if (body.assignedUserId === null) {
+          data.assignedUserId = null;
+        } else {
+          const assignee = await prisma.user.findFirst({
+            where: { id: body.assignedUserId, hotelId: user.hotelId },
+            select: { id: true }
+          });
+          if (!assignee) {
+            return reply.code(400).send({ error: "Invalid assignedUserId for this hotel" });
+          }
+          data.assignedUserId = assignee.id;
+        }
+      }
+
+      if (body.departmentId !== undefined) {
+        if (body.departmentId === null) {
+          data.departmentId = null;
+        } else {
+          const dept = await prismaAny.department.findFirst({
+            where: { id: body.departmentId, hotelId: user.hotelId },
+            select: { id: true }
+          });
+          if (!dept) {
+            return reply.code(400).send({ error: "Invalid departmentId for this hotel" });
+          }
+          data.departmentId = dept.id;
+        }
+      }
+
+      if (!Object.keys(data).length) {
+        return reply.code(400).send({ error: "No fields to update" });
+      }
+
+      const updated = await prismaAny.prompt.update({
+        where: { id },
+        data,
+        include: {
+          author: { select: { id: true, email: true } },
+          category: { select: { id: true, name: true } },
+          assignedUser: { select: { id: true, email: true } },
+          department: { select: { id: true, name: true } }
+        }
+      });
       return updated;
     }
   );
@@ -259,7 +449,7 @@ export async function promptRoutes(app: FastifyInstance) {
 
       const { id } = req.params as { id: string };
 
-      const existing = await prisma.prompt.findFirst({
+      const existing = await prismaAny.prompt.findFirst({
         where: { id, hotelId: user.hotelId }
       });
       if (!existing) return reply.code(404).send({ error: "Not found" });
@@ -267,7 +457,7 @@ export async function promptRoutes(app: FastifyInstance) {
       // (optional) restrict to creator only:
       if (existing.authorId !== user.id) return reply.code(403).send({ error: "Only the creator can delete this prompt" });
 
-      await prisma.prompt.delete({ where: { id } });
+      await prismaAny.prompt.delete({ where: { id } });
       return { ok: true };
     }
   );
@@ -278,7 +468,7 @@ export async function promptRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     const body = PromptFeedbackBody.parse(req.body ?? {});
 
-    const prompt = await prisma.prompt.findFirst({
+    const prompt = await prismaAny.prompt.findFirst({
       where: { id, hotelId: user.hotelId, archived: false },
       select: { id: true }
     });
@@ -310,7 +500,7 @@ export async function promptRoutes(app: FastifyInstance) {
     if (reply.sent) return;
     const { id } = req.params as { id: string };
 
-    const prompt = await prisma.prompt.findFirst({
+    const prompt = await prismaAny.prompt.findFirst({
       where: { id, hotelId: user.hotelId },
       select: { id: true }
     });
@@ -339,7 +529,7 @@ export async function promptRoutes(app: FastifyInstance) {
 
     let prompt: { id: string; title: string } | null = null;
     if (hasPromptId) {
-      prompt = await prisma.prompt.findFirst({
+      prompt = await prismaAny.prompt.findFirst({
         where: { id: normalizedId, hotelId: user.hotelId, authorId: user.id },
         select: { id: true, title: true }
       });
@@ -401,7 +591,7 @@ export async function promptRoutes(app: FastifyInstance) {
     const { user } = await assertHotelAndProvider(req, reply);
     if (reply.sent) return;
 
-    const prompts = await prisma.prompt.findMany({
+    const prompts = await prismaAny.prompt.findMany({
       where: { hotelId: user.hotelId, archived: false },
       select: { id: true, title: true }
     });
@@ -459,7 +649,7 @@ export async function promptRoutes(app: FastifyInstance) {
     const { user } = await assertHotelAndProvider(req, reply);
     if (reply.sent) return;
 
-    const prompts = await prisma.prompt.findMany({
+    const prompts = await prismaAny.prompt.findMany({
       where: { hotelId: user.hotelId, archived: false },
       select: { id: true, authorId: true, title: true }
     });
@@ -528,7 +718,7 @@ export async function promptRoutes(app: FastifyInstance) {
     if (reply.sent) return;
     const { format } = PromptExportQuery.parse(req.query ?? {});
 
-    const prompts = await prisma.prompt.findMany({
+    const prompts = await prismaAny.prompt.findMany({
       where: { hotelId: user.hotelId },
       orderBy: { updatedAt: "desc" },
       select: {
@@ -540,7 +730,9 @@ export async function promptRoutes(app: FastifyInstance) {
         createdAt: true,
         updatedAt: true,
         author: { select: { id: true, email: true } },
-        category: { select: { id: true, name: true } }
+        category: { select: { id: true, name: true } },
+        assignedUser: { select: { id: true, email: true } },
+        department: { select: { id: true, name: true } }
       }
     });
 
@@ -584,6 +776,8 @@ export async function promptRoutes(app: FastifyInstance) {
         version: prompt.version,
         author: prompt.author,
         category: prompt.category,
+        assignedUser: prompt.assignedUser,
+        department: prompt.department,
         createdAt: prompt.createdAt,
         updatedAt: prompt.updatedAt,
         feedback: {

@@ -11,6 +11,7 @@
     "rootDir": "src",
     "outDir": "dist",
     "strict": true,
+    "noImplicitAny": false,
     "types": ["node"],
     "lib": ["ES2022"],
   },

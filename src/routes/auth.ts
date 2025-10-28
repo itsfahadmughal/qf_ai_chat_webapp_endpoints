@@ -5,11 +5,14 @@ import { z, ZodError } from "zod";
 import crypto from "crypto";
 import { sendPasswordResetEmail } from "../lib/mailer.js";
 
+const prismaAny = prisma as any;
+
 const RegisterSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  hotelId: z.string(), 
-  userType: z.enum(["author", "reader"]).default("reader") 
+  hotelId: z.string(),
+  userType: z.enum(["author", "reader"]).default("reader"),
+  departmentId: z.string().optional()
 });
 
 const LoginSchema = z.object({
@@ -56,7 +59,7 @@ export async function authRoutes(app: FastifyInstance) {
       newPassword: z.string().min(8, "newPassword must be at least 8 characters")
     }).parse(req.body ?? {});
 
-    const me = await prisma.user.findUnique({
+    const me = await prismaAny.user.findUnique({
       where: { id: req.user.id },
       select: { id: true, passwordHash: true }
     });
@@ -87,13 +90,28 @@ export async function authRoutes(app: FastifyInstance) {
 
   // --- Register ---
   app.post("/auth/register", async (req, reply) => {
-    const { email, password, hotelId, userType } = RegisterSchema.parse(req.body ?? {});
-    const exists = await prisma.user.findUnique({ where: { email } });
+    const { email, password, hotelId, userType, departmentId } = RegisterSchema.parse(req.body ?? {});
+    const exists = await prismaAny.user.findUnique({ where: { email } });
     if (exists) return reply.code(409).send({ error: "Email already registered" });
 
+    if (departmentId) {
+      const department = await prismaAny.department.findFirst({
+        where: { id: departmentId, hotelId }
+      });
+      if (!department) {
+        return reply.code(400).send({ error: "invalid_department", details: "Department does not belong to provided hotel" });
+      }
+    }
+
     const hash = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({
-      data: { email, passwordHash: hash, hotelId, role: userType as any } 
+    const user = await prismaAny.user.create({
+      data: {
+        email,
+        passwordHash: hash,
+        hotelId,
+        role: userType as any,
+        departmentId: departmentId ?? null
+      }
     });
 
     const token = app.jwt.sign({ id: user.id, role: user.role });
@@ -102,7 +120,7 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.post("/auth/login", async (req, reply) => {
     const { email, password } = LoginSchema.parse(req.body ?? {});
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prismaAny.user.findUnique({ where: { email } });
     if (!user) return reply.code(401).send({ error: "Invalid credentials" });
 
     const ok = await bcrypt.compare(password, user.passwordHash);
@@ -115,15 +133,17 @@ export async function authRoutes(app: FastifyInstance) {
   // --- Me ---
   // --- Me (fetch from DB; select only existing fields on your User model) ---
   app.get("/me", { preHandler: app.authenticate }, async (req: any, reply) => {
-    const me = await prisma.user.findUnique({
+    const me = await prismaAny.user.findUnique({
       where: { id: req.user.id },
       select: {
         id: true,
         email: true,
         role: true,
         hotelId: true,
+        departmentId: true,
         createdAt: true,
-        hotel: { select: { id: true, name: true, isActive: true } }
+        hotel: { select: { id: true, name: true, isActive: true } },
+        department: { select: { id: true, name: true, isActive: true } }
       }
     });
 
@@ -149,7 +169,7 @@ export async function authRoutes(app: FastifyInstance) {
   // --- Forgot Password ---
   app.post("/auth/forgot", async (req, reply) => {
     const { email } = ForgotSchema.parse(req.body ?? {});
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prismaAny.user.findUnique({ where: { email } });
 
     // Always respond 200 to avoid user enumeration
     if (!user) {
@@ -214,7 +234,7 @@ export async function authRoutes(app: FastifyInstance) {
     if (rec.usedAt) return reply.code(400).send({ error: "Token already used" });
     if (rec.expiresAt <= new Date()) return reply.code(400).send({ error: "Token expired" });
 
-    const user = await prisma.user.findUnique({ where: { id: rec.userId } });
+    const user = await prismaAny.user.findUnique({ where: { id: rec.userId } });
     if (!user) return reply.code(400).send({ error: "Invalid token" });
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
@@ -240,7 +260,7 @@ export async function authRoutes(app: FastifyInstance) {
   // --- Verify OTP ---
   app.post("/auth/otp/verify", async (req, reply) => {
     const { email, code } = OtpVerifySchema.parse(req.body ?? {});
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prismaAny.user.findUnique({ where: { email } });
     if (!user) return reply.code(400).send({ error: "Invalid code" });
 
     // Find latest unconsumed OTP for this email within expiry

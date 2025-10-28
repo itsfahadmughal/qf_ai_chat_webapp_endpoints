@@ -9,11 +9,15 @@ import { mcpManager } from "../mcp/manager.js";
 import type { ChatMessage } from "../providers/types.js";
 import { injectBrevoKeyIfNeeded } from "../lib/byok.js";
 import { getHotelOpenAIClient, searchVectorStore } from "../lib/openai.js";
+import { scheduleFineTuneUpload } from "../lib/fineTuning.js";
+
+const prismaAny = prisma as any;
 
 type ProviderName = "openai" | "deepseek" | "perplexity";
 
 const ChatBody = z.object({
   conversationId: z.string().optional(),
+  promptId: z.string().nullable().optional(),
   provider: z.string().optional(),
   model: z.string().optional(),
   messages: z.array(z.object({ role: z.string(), content: z.string() })).nonempty(),
@@ -53,7 +57,7 @@ function adaptMessagesForProvider(
 
 export async function chatRoutes(app: FastifyInstance) {
   app.post("/chat", { preHandler: app.authenticate }, async (req: any, reply) => {
-    const { conversationId, provider, model, messages, tool, knowledge } = ChatBody.parse(req.body || {});
+    const { conversationId, promptId: rawPromptId, provider, model, messages, tool, knowledge } = ChatBody.parse(req.body || {});
     if (!messages?.length) return reply.code(400).send({ error: "messages is required" });
 
     // 1) Load user (hotelId used for policy)
@@ -65,7 +69,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
     // 2) If continuing, verify ownership and load existing conversation
     const existingConv = conversationId
-      ? await prisma.conversation.findFirst({
+      ? await prismaAny.conversation.findFirst({
           where: { id: conversationId, userId: user.id },
           select: { id: true, provider: true, model: true, hotelId: true }
         })
@@ -76,6 +80,18 @@ export async function chatRoutes(app: FastifyInstance) {
 
     // 3) Hotel provider toggles (allowed set + hotel defaults)
     const hotelIdForPolicy = existingConv?.hotelId ?? user.hotelId;
+
+    let promptId: string | null = null;
+    if (!existingConv && rawPromptId) {
+      const prompt = await prismaAny.prompt.findFirst({
+        where: { id: rawPromptId, hotelId: hotelIdForPolicy },
+        select: { id: true }
+      });
+      if (!prompt) {
+        return reply.code(400).send({ error: "Invalid promptId for this hotel" });
+      }
+      promptId = prompt.id;
+    }
     const toggles = await prisma.hotelProviderToggle.findMany({
       where: { hotelId: hotelIdForPolicy, isEnabled: true },
       select: { provider: true, defaultModel: true }
@@ -330,21 +346,26 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     // 9) Persist conversation & messages
+    const createdConversation = !existingConv;
     const conv = existingConv
-      ? await prisma.conversation.update({
+      ? await prismaAny.conversation.update({
           where: { id: existingConv.id },
           data: { provider: chosenProvider as any, model: chosenModel, updatedAt: new Date() }
         })
-      : await prisma.conversation.create({
+      : await prismaAny.conversation.create({
           data: {
             title: messages?.[0]?.content?.slice(0, 60) || "New chat",
             provider: chosenProvider as any,
             model: chosenModel,
+            promptId,
             user: { connect: { id: user.id } },
             hotel: { connect: { id: user.hotelId } }
           }
         });
 
+    if (createdConversation) {
+      scheduleFineTuneUpload(user.hotelId, req.log);
+    }
     // Store inbound user + (optional) tool messages exactly as they happened
     const inbound = [...messages];
     if (toolTextForDB) inbound.push({ role: "tool", content: toolTextForDB });
@@ -381,25 +402,25 @@ export async function chatRoutes(app: FastifyInstance) {
   // Archive a conversation
   app.patch("/conversations/:id/archive", { preHandler: app.authenticate }, async (req: any, reply) => {
     const { id } = req.params;
-    const owned = await prisma.conversation.findFirst({ where: { id, userId: req.user.id } });
+    const owned = await prismaAny.conversation.findFirst({ where: { id, userId: req.user.id } });
     if (!owned) return reply.code(404).send({ error: "Not found" });
-    return prisma.conversation.update({ where: { id }, data: { archived: true } });
+    return prismaAny.conversation.update({ where: { id }, data: { archived: true } });
   });
 
   // Delete a conversation
   app.delete("/conversations/:id", { preHandler: app.authenticate }, async (req: any, reply) => {
     const { id } = req.params;
-    const owned = await prisma.conversation.findFirst({ where: { id, userId: req.user.id } });
+    const owned = await prismaAny.conversation.findFirst({ where: { id, userId: req.user.id } });
     if (!owned) return reply.code(404).send({ error: "Not found" });
     await prisma.message.deleteMany({ where: { conversationId: id } });
-    await prisma.conversation.delete({ where: { id } });
+    await prismaAny.conversation.delete({ where: { id } });
     return { ok: true };
   });
 
   // Export a conversation
   app.get("/conversations/:id/export", { preHandler: app.authenticate }, async (req: any, reply) => {
     const { id } = req.params;
-    const conv = await prisma.conversation.findFirst({ where: { id, userId: req.user.id } });
+    const conv = await prismaAny.conversation.findFirst({ where: { id, userId: req.user.id } });
     if (!conv) return reply.code(404).send({ error: "Not found" });
     const msgs = await prisma.message.findMany({
       where: { conversationId: id },
