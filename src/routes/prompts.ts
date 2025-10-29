@@ -97,6 +97,7 @@ export async function promptRoutes(app: FastifyInstance) {
           categoryName: z.string().optional(),
           tags: z.array(z.string()).optional(),
           version: z.string().optional(),
+          assignedUserId: z.union([z.string(), z.array(z.string())]).optional(),
           assignedUserIds: z.array(z.string()).optional(),
           departmentId: z.string().optional()
         })
@@ -122,15 +123,24 @@ export async function promptRoutes(app: FastifyInstance) {
         resolvedCategoryId = cat.id;
       }
 
+      const assignedUserIdsInput =
+        body.assignedUserIds !== undefined
+          ? body.assignedUserIds
+          : body.assignedUserId !== undefined
+            ? Array.isArray(body.assignedUserId)
+              ? body.assignedUserId
+              : [body.assignedUserId]
+            : undefined;
+
       const assignedUserIds: string[] = [];
-      if (body.assignedUserIds?.length) {
-        const uniqueIds = Array.from(new Set(body.assignedUserIds));
+      if (assignedUserIdsInput?.length) {
+        const uniqueIds = Array.from(new Set(assignedUserIdsInput));
         const found = await prisma.user.findMany({
           where: { id: { in: uniqueIds }, hotelId: user.hotelId },
           select: { id: true }
         });
         if (found.length !== uniqueIds.length) {
-          return reply.code(400).send({ error: "Invalid assignedUserIds for this hotel" });
+          return reply.code(400).send({ error: "Invalid assigned user IDs for this hotel" });
         }
         assignedUserIds.push(...found.map((f) => f.id));
       }
@@ -364,6 +374,7 @@ export async function promptRoutes(app: FastifyInstance) {
           version: z.string().optional(),
           archived: z.boolean().optional(),
           categoryId: z.string().nullable().optional(),
+          assignedUserId: z.union([z.string(), z.array(z.string())]).nullable().optional(),
           assignedUserIds: z.array(z.string()).nullable().optional(),
           departmentId: z.string().nullable().optional()
         })
@@ -401,14 +412,23 @@ export async function promptRoutes(app: FastifyInstance) {
         }
       }
 
-      let assignedUsersUpdate:
-        | { set: Array<{ id: string }> }
-        | undefined;
-      if (body.assignedUserIds !== undefined) {
-        if (body.assignedUserIds === null) {
+      const assignedUsersInput =
+        body.assignedUserIds !== undefined
+          ? body.assignedUserIds
+          : body.assignedUserId !== undefined
+            ? body.assignedUserId === null
+              ? null
+              : Array.isArray(body.assignedUserId)
+                ? body.assignedUserId
+                : [body.assignedUserId]
+            : undefined;
+
+      let assignedUsersUpdate: { set: Array<{ id: string }> } | undefined;
+      if (assignedUsersInput !== undefined) {
+        if (assignedUsersInput === null) {
           assignedUsersUpdate = { set: [] };
         } else {
-          const uniqueIds = Array.from(new Set(body.assignedUserIds));
+          const uniqueIds = Array.from(new Set(assignedUsersInput));
           if (!uniqueIds.length) {
             assignedUsersUpdate = { set: [] };
           } else {
@@ -417,7 +437,7 @@ export async function promptRoutes(app: FastifyInstance) {
               select: { id: true }
             });
             if (found.length !== uniqueIds.length) {
-              return reply.code(400).send({ error: "Invalid assignedUserIds for this hotel" });
+              return reply.code(400).send({ error: "Invalid assigned user IDs for this hotel" });
             }
             assignedUsersUpdate = {
               set: found.map((f) => ({ id: f.id }))

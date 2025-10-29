@@ -43,7 +43,7 @@ export async function conversationRoutes(app: FastifyInstance) {
         model: model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
         user:  { connect: { id: user.id } },
         hotel: { connect: { id: user.hotelId } },
-        promptId
+        prompt: promptId ? { connect: { id: promptId } } : undefined
       }
     });
 
