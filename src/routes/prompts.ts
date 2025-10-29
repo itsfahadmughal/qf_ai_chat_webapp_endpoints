@@ -89,16 +89,18 @@ export async function promptRoutes(app: FastifyInstance) {
       const { user } = await assertHotelAndProvider(req, reply); // loads user & checks hotel active
       if (reply.sent) return;
 
-      const body = z.object({
-        title: z.string().min(1),
-        body: z.string().min(1),
-        categoryId: z.string().optional(),
-        categoryName: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        version: z.string().optional(),
-        assignedUserId: z.string().optional(),
-        departmentId: z.string().optional()
-      }).parse(req.body);
+      const body = z
+        .object({
+          title: z.string().min(1),
+          body: z.string().min(1),
+          categoryId: z.string().optional(),
+          categoryName: z.string().optional(),
+          tags: z.array(z.string()).optional(),
+          version: z.string().optional(),
+          assignedUserIds: z.array(z.string()).optional(),
+          departmentId: z.string().optional()
+        })
+        .parse(req.body);
 
       // Resolve category
       let resolvedCategoryId: string | null = null;
@@ -120,16 +122,17 @@ export async function promptRoutes(app: FastifyInstance) {
         resolvedCategoryId = cat.id;
       }
 
-      let assignedUserId: string | null = null;
-      if (body.assignedUserId) {
-        const assignee = await prisma.user.findFirst({
-          where: { id: body.assignedUserId, hotelId: user.hotelId },
+      const assignedUserIds: string[] = [];
+      if (body.assignedUserIds?.length) {
+        const uniqueIds = Array.from(new Set(body.assignedUserIds));
+        const found = await prisma.user.findMany({
+          where: { id: { in: uniqueIds }, hotelId: user.hotelId },
           select: { id: true }
         });
-        if (!assignee) {
-          return reply.code(400).send({ error: "Invalid assignedUserId for this hotel" });
+        if (found.length !== uniqueIds.length) {
+          return reply.code(400).send({ error: "Invalid assignedUserIds for this hotel" });
         }
-        assignedUserId = assignee.id;
+        assignedUserIds.push(...found.map((f) => f.id));
       }
 
       let departmentId: string | null = null;
@@ -153,8 +156,15 @@ export async function promptRoutes(app: FastifyInstance) {
           categoryId: resolvedCategoryId,
           tags: body.tags ?? [],
           version: body.version ?? null,
-          assignedUserId,
-          departmentId
+          departmentId,
+          assignedUsers: assignedUserIds.length
+            ? {
+                connect: assignedUserIds.map((id) => ({ id }))
+              }
+            : undefined
+        },
+        include: {
+          assignedUsers: { select: { id: true, email: true } }
         }
       });
     }
@@ -190,7 +200,7 @@ export async function promptRoutes(app: FastifyInstance) {
       include: {
         author: { select: { id: true, email: true } },
         category: { select: { id: true, name: true } },
-        assignedUser: { select: { id: true, email: true } },
+        assignedUsers: { select: { id: true, email: true } },
         department: { select: { id: true, name: true } }
       } 
     });
@@ -224,14 +234,14 @@ export async function promptRoutes(app: FastifyInstance) {
     const promptRecords = (await prismaAny.prompt.findMany({
       where: {
         hotelId: user.hotelId,
-        assignedUserId: userId,
+        assignedUsers: { some: { id: userId } },
         archived: false
       },
       orderBy: { updatedAt: "desc" },
       include: {
         author: { select: { id: true, email: true } },
         category: { select: { id: true, name: true } },
-        assignedUser: { select: { id: true, email: true } },
+        assignedUsers: { select: { id: true, email: true } },
         department: { select: { id: true, name: true } }
       }
     })) as any[];
@@ -271,7 +281,7 @@ export async function promptRoutes(app: FastifyInstance) {
       include: {
         author: { select: { id: true, email: true } },
         category: { select: { id: true, name: true } },
-        assignedUser: { select: { id: true, email: true } },
+        assignedUsers: { select: { id: true, email: true } },
         department: { select: { id: true, name: true } }
       }
     })) as any[];
@@ -300,7 +310,7 @@ export async function promptRoutes(app: FastifyInstance) {
       include: {
         author: { select: { id: true, email: true } },
         category: { select: { id: true, name: true } },
-        assignedUser: { select: { id: true, email: true } },
+        assignedUsers: { select: { id: true, email: true } },
         department: { select: { id: true, name: true } }
       }
     });
@@ -329,7 +339,7 @@ export async function promptRoutes(app: FastifyInstance) {
       include: {
         author: { select: { id: true, email: true } },
         category: { select: { id: true, name: true } },
-        assignedUser: { select: { id: true, email: true } },
+        assignedUsers: { select: { id: true, email: true } },
         department: { select: { id: true, name: true } }
       }
     });
@@ -354,7 +364,7 @@ export async function promptRoutes(app: FastifyInstance) {
           version: z.string().optional(),
           archived: z.boolean().optional(),
           categoryId: z.string().nullable().optional(),
-          assignedUserId: z.string().nullable().optional(),
+          assignedUserIds: z.array(z.string()).nullable().optional(),
           departmentId: z.string().nullable().optional()
         })
         .parse(req.body ?? {});
@@ -391,18 +401,28 @@ export async function promptRoutes(app: FastifyInstance) {
         }
       }
 
-      if (body.assignedUserId !== undefined) {
-        if (body.assignedUserId === null) {
-          data.assignedUserId = null;
+      let assignedUsersUpdate:
+        | { set: Array<{ id: string }> }
+        | undefined;
+      if (body.assignedUserIds !== undefined) {
+        if (body.assignedUserIds === null) {
+          assignedUsersUpdate = { set: [] };
         } else {
-          const assignee = await prisma.user.findFirst({
-            where: { id: body.assignedUserId, hotelId: user.hotelId },
-            select: { id: true }
-          });
-          if (!assignee) {
-            return reply.code(400).send({ error: "Invalid assignedUserId for this hotel" });
+          const uniqueIds = Array.from(new Set(body.assignedUserIds));
+          if (!uniqueIds.length) {
+            assignedUsersUpdate = { set: [] };
+          } else {
+            const found = await prisma.user.findMany({
+              where: { id: { in: uniqueIds }, hotelId: user.hotelId },
+              select: { id: true }
+            });
+            if (found.length !== uniqueIds.length) {
+              return reply.code(400).send({ error: "Invalid assignedUserIds for this hotel" });
+            }
+            assignedUsersUpdate = {
+              set: found.map((f) => ({ id: f.id }))
+            };
           }
-          data.assignedUserId = assignee.id;
         }
       }
 
@@ -421,17 +441,22 @@ export async function promptRoutes(app: FastifyInstance) {
         }
       }
 
-      if (!Object.keys(data).length) {
+      const hasAssignedUsersUpdate = assignedUsersUpdate !== undefined;
+
+      if (!Object.keys(data).length && !hasAssignedUsersUpdate) {
         return reply.code(400).send({ error: "No fields to update" });
       }
 
       const updated = await prismaAny.prompt.update({
         where: { id },
-        data,
+        data: {
+          ...data,
+          ...(hasAssignedUsersUpdate ? { assignedUsers: assignedUsersUpdate } : {})
+        },
         include: {
           author: { select: { id: true, email: true } },
           category: { select: { id: true, name: true } },
-          assignedUser: { select: { id: true, email: true } },
+          assignedUsers: { select: { id: true, email: true } },
           department: { select: { id: true, name: true } }
         }
       });
@@ -731,7 +756,7 @@ export async function promptRoutes(app: FastifyInstance) {
         updatedAt: true,
         author: { select: { id: true, email: true } },
         category: { select: { id: true, name: true } },
-        assignedUser: { select: { id: true, email: true } },
+        assignedUsers: { select: { id: true, email: true } },
         department: { select: { id: true, name: true } }
       }
     });
@@ -776,7 +801,7 @@ export async function promptRoutes(app: FastifyInstance) {
         version: prompt.version,
         author: prompt.author,
         category: prompt.category,
-        assignedUser: prompt.assignedUser,
+        assignedUsers: prompt.assignedUsers,
         department: prompt.department,
         createdAt: prompt.createdAt,
         updatedAt: prompt.updatedAt,

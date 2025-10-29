@@ -25,7 +25,7 @@ async function buildFineTuneDataset(hotelId: string) {
         tags: true,
         version: true,
         departmentId: true,
-        assignedUserId: true,
+        assignedUsers: { select: { id: true } },
         archived: true,
         createdAt: true,
         updatedAt: true
@@ -92,7 +92,9 @@ async function buildFineTuneDataset(hotelId: string) {
         tags: prompt.tags,
         version: prompt.version,
         departmentId: prompt.departmentId ?? null,
-        assignedUserId: prompt.assignedUserId ?? null,
+        assignedUserIds: Array.isArray(prompt.assignedUsers)
+          ? prompt.assignedUsers.map((user: any) => user.id)
+          : [],
         archived: prompt.archived,
         createdAt: toISOString(prompt.createdAt),
         updatedAt: toISOString(prompt.updatedAt)

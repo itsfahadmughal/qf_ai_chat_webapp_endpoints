@@ -7,11 +7,12 @@ import { decryptSecret } from "../crypto/secrets.js";
 import { sanitizeToolsResponse } from "../mcp/sanitizeToolSchema.js";
 
 const CreateServerSchema = z.object({
+  hotelId: z.string().min(1),
   name: z.string().min(1),
-  transport: z.enum(["stdio","http","remote"]).default("stdio"),
-  command: z.string().optional(),          // for stdio
-  args: z.array(z.string()).optional(),    // for stdio
-  url: z.string().url().optional(),        // for http/remote
+  transport: z.enum(["stdio", "http", "remote"]).default("stdio"),
+  command: z.string().optional(), // for stdio
+  args: z.array(z.string()).optional(), // for stdio
+  url: z.string().url().optional(), // for http/remote
   isActive: z.boolean().default(true)
 });
 
@@ -42,11 +43,10 @@ export async function mcpRoutes(app: FastifyInstance) {
     return { ...args, apiKey };
   }
 
-  // CREATE (server belongs to current user's hotel)
-  app.post("/mcp/servers", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
-    const hotelId = await getHotelId(req);
-    if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
+  // CREATE (server belongs to provided hotel)
+  app.post("/mcp/servers", async (req: any, reply) => {
     const body = CreateServerSchema.parse(req.body ?? {});
+    const hotelId = body.hotelId;
 
     const row = await prisma.mCPServer.create({
       data: {
