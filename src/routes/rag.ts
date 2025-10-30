@@ -451,6 +451,7 @@ export async function ragRoutes(app: FastifyInstance) {
       return reply.code(500).send({ error: "vector_store_default_failed", details: String(err?.message ?? err) });
     }
   });
+  
 
   app.delete("/rag/vector-stores/:id", async (req: any, reply) => {
     try {
