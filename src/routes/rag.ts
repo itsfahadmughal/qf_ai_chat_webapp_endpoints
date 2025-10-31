@@ -393,34 +393,30 @@ export async function ragRoutes(app: FastifyInstance) {
       setAttr("moduleAssignment", fields.moduleAssignment);
       setAttr("description", fields.description);
 
-      const uploads: Array<{
-        vectorStoreFile: any;
-        sourceFileId: string;
-        attributes: Record<string, string>;
-      }> = [];
+      const uploads = await Promise.all(
+        files.map(async (f) => {
+          const uploaded = await client.files.create({
+            purpose: "assistants",
+            file: f.file
+          });
 
-      for (const f of files) {
-        const uploaded = await client.files.create({
-          purpose: "assistants",
-          file: f.file
-        });
+          const attributes = {
+            originalFilename: f.filename,
+            ...baseAttributes
+          };
 
-        const attributes = {
-          originalFilename: f.filename,
-          ...baseAttributes
-        };
+          const attached = await vectorStores.files.create(record.openaiId, {
+            file_id: uploaded.id,
+            attributes
+          });
 
-        const attached = await vectorStores.files.create(record.openaiId, {
-          file_id: uploaded.id,
-          attributes
-        });
-
-        uploads.push({
-          vectorStoreFile: attached,
-          sourceFileId: uploaded.id,
-          attributes
-        });
-      }
+          return {
+            vectorStoreFile: attached,
+            sourceFileId: uploaded.id,
+            attributes
+          };
+        })
+      );
 
       return {
         vectorStoreId: record.id,
