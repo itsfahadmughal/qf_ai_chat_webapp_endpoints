@@ -92,8 +92,8 @@ export async function conversationRoutes(app: FastifyInstance) {
 
     const messages = messagesRaw.map(m => ({
       ...m,
-      provider: conv.provider,
-      model: conv.model
+      provider: m.provider ?? conv.provider,
+      model: m.model ?? conv.model
     }));
 
     return { conversation: conv, messages };

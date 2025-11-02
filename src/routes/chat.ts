@@ -451,14 +451,22 @@ export async function chatRoutes(app: FastifyInstance) {
         data: inbound.map(m => ({
           role: m.role,
           content: m.content,
-          conversationId: conv.id
+          conversationId: conv.id,
+          provider: chosenProvider as any,
+          model: chosenModel
         }))
       });
     }
 
     // Store the assistant reply and return IDs
     const assistantMessage = await prisma.message.create({
-      data: { role: "assistant", content: result.content, conversationId: conv.id }
+      data: {
+        role: "assistant",
+        content: result.content,
+        conversationId: conv.id,
+        provider: chosenProvider as any,
+        model: chosenModel
+      }
     });
 
     const updatedHistory = [

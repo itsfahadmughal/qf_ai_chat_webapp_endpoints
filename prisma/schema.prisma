@@ -98,6 +98,8 @@ model Message {
   promptTokens     Int?
   completionTokens Int?
   totalTokens      Int?
+  provider         Provider?
+  model            String?
   MessageFeedback  MessageFeedback[]
 }
 
@@ -112,25 +114,25 @@ model PromptCategory {
 }
 
 model Prompt {
-  id          String           @id @default(cuid())
-  hotelId     String
-  hotel       Hotel            @relation(fields: [hotelId], references: [id])
-  authorId    String
-  author      User             @relation(fields: [authorId], references: [id])
-  departmentId String?
-  department  Department?      @relation(fields: [departmentId], references: [id])
-  title       String
-  body        String // the actual prompt text
-  categoryId  String?
-  category    PromptCategory?  @relation(fields: [categoryId], references: [id]) // relation
-  tags        String[]         @default([])
-  version     String? // e.g. "v1.2"
-  archived    Boolean          @default(false)
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  feedback    PromptFeedback[]
+  id            String           @id @default(cuid())
+  hotelId       String
+  hotel         Hotel            @relation(fields: [hotelId], references: [id])
+  authorId      String
+  author        User             @relation(fields: [authorId], references: [id])
+  departmentId  String?
+  department    Department?      @relation(fields: [departmentId], references: [id])
+  title         String
+  body          String // the actual prompt text
+  categoryId    String?
+  category      PromptCategory?  @relation(fields: [categoryId], references: [id]) // relation
+  tags          String[]         @default([])
+  version       String? // e.g. "v1.2"
+  archived      Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  feedback      PromptFeedback[]
   conversations Conversation[]
-  assignedUsers User[]         @relation("PromptAssignedUser")
+  assignedUsers User[]           @relation("PromptAssignedUser")
 
   @@index([hotelId, archived])
   @@index([departmentId])
@@ -285,31 +287,31 @@ model ToolCallLog {
 }
 
 model HotelVectorStore {
-  id        String   @id @default(cuid())
-  hotelId   String
-  hotel     Hotel    @relation(fields: [hotelId], references: [id])
-  provider  Provider @default(openai)
-  departmentId String? @unique
+  id           String      @id @default(cuid())
+  hotelId      String
+  hotel        Hotel       @relation(fields: [hotelId], references: [id])
+  provider     Provider    @default(openai)
+  departmentId String?     @unique
   department   Department? @relation(fields: [departmentId], references: [id])
-  openaiId  String   @unique
-  name      String?
-  metadata  Json?
-  isDefault Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  openaiId     String      @unique
+  name         String?
+  metadata     Json?
+  isDefault    Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
   @@index([hotelId])
 }
 
 model Department {
-  id          String             @id @default(cuid())
+  id          String            @id @default(cuid())
   hotelId     String
-  hotel       Hotel              @relation(fields: [hotelId], references: [id])
+  hotel       Hotel             @relation(fields: [hotelId], references: [id])
   name        String
   description String?
-  isActive    Boolean            @default(true)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
   users       User[]
   prompts     Prompt[]
   vectorStore HotelVectorStore?
