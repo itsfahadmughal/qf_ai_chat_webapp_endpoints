@@ -4,6 +4,7 @@ import { z } from "zod";
 import { scheduleFineTuneUpload } from "../lib/fineTuning.js";
 
 const prismaAny = prisma as any;
+const MEMORY_MESSAGE_ROLE = "memory";
 
 const CreateConv = z.object({
   title: z.string().optional(),
@@ -85,7 +86,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     const conv = await prismaAny.conversation.findFirst({ where: { id, userId: req.user.id } });
     if (!conv) return reply.code(404).send({ error: "Not found" });
     const messagesRaw = await prisma.message.findMany({
-      where: { conversationId: id },
+      where: { conversationId: id, NOT: { role: MEMORY_MESSAGE_ROLE } },
       orderBy: { createdAt: "asc" }
     });
 

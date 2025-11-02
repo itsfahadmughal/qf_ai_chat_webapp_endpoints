@@ -15,6 +15,11 @@ const prismaAny = prisma as any;
 
 type ProviderName = "openai" | "deepseek" | "perplexity";
 
+const MEMORY_MESSAGE_ROLE = "memory";
+const MAX_RECENT_CONTEXT_MESSAGES = 8;
+const SUMMARY_CHAR_LIMIT = 2000;
+const SUMMARY_PER_MESSAGE_LIMIT = 280;
+
 const ChatBody = z.object({
   conversationId: z.string().optional(),
   promptId: z.string().nullable().optional(),
@@ -53,6 +58,54 @@ function adaptMessagesForProvider(
     default:
       return msgs;
   }
+}
+
+function normalizeSummaryText(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function roleLabel(role: string) {
+  switch (role) {
+    case "user":
+      return "User";
+    case "assistant":
+      return "Assistant";
+    case "system":
+      return "System";
+    case "tool":
+      return "Tool";
+    default:
+      return role;
+  }
+}
+
+function buildSummaryMessage(
+  messages: Array<{ role: string; content: string }>
+): string | null {
+  if (!messages.length) return null;
+
+  const bullets: string[] = [];
+  let total = "Summary of earlier conversation:".length;
+
+  for (const msg of messages) {
+    const snippet = normalizeSummaryText(msg.content).slice(0, SUMMARY_PER_MESSAGE_LIMIT);
+    if (!snippet) continue;
+    const needsEllipsis = normalizeSummaryText(msg.content).length > snippet.length;
+    const line = `- ${roleLabel(msg.role)}: ${snippet}${needsEllipsis ? "..." : ""}`;
+    const projectedTotal = total + (bullets.length ? 1 : 0) + line.length;
+    if (projectedTotal > SUMMARY_CHAR_LIMIT) {
+      const remaining = SUMMARY_CHAR_LIMIT - total - (bullets.length ? 1 : 0);
+      if (remaining > 10) {
+        bullets.push(`${line.slice(0, remaining).replace(/\s+$/,"")}...`);
+      }
+      break;
+    }
+    bullets.push(line);
+    total += (bullets.length ? 1 : 0) + line.length;
+  }
+
+  if (!bullets.length) return null;
+  return `Summary of earlier conversation:\n${bullets.join("\n")}`;
 }
 
 export async function chatRoutes(app: FastifyInstance) {
@@ -123,6 +176,22 @@ export async function chatRoutes(app: FastifyInstance) {
     }
     if (!chosenProvider) return reply.code(403).send({ error: "No provider available (hotel or user disabled all)" });
 
+    const persistedHistory: Array<{ role: string; content: string }> = [];
+    let memoryMessage: { id: string; content: string } | null = null;
+    if (existingConv) {
+      const history = await prisma.message.findMany({
+        where: { conversationId: existingConv.id },
+        orderBy: { createdAt: "asc" }
+      });
+      for (const item of history) {
+        if (item.role === MEMORY_MESSAGE_ROLE) {
+          memoryMessage = { id: item.id, content: item.content };
+          continue;
+        }
+        persistedHistory.push({ role: item.role, content: item.content });
+      }
+    }
+
     // 6) Choose model
     const perUserModel =
       chosenProvider === "openai"
@@ -172,7 +241,14 @@ export async function chatRoutes(app: FastifyInstance) {
 
     // 7.5) Optional MCP tool execution (pre-LLM)
     // We'll add the tool result to the *chat context*, but send it to the provider as a "system" message (not "tool")
-    let messagesForLLM = [...messages];
+    const summaryForLLM = memoryMessage?.content?.trim();
+    const priorMessagesForLLM = [
+      ...(summaryForLLM
+        ? [{ role: "system", content: summaryForLLM }]
+        : []),
+      ...persistedHistory.slice(Math.max(persistedHistory.length - MAX_RECENT_CONTEXT_MESSAGES, 0))
+    ];
+    let messagesForLLM = [...priorMessagesForLLM, ...messages];
     let knowledgeContextForDB: string | undefined;
     let knowledgeUsage: { vectorStoreId: string; chunkCount: number } | undefined;
 
@@ -384,6 +460,35 @@ export async function chatRoutes(app: FastifyInstance) {
     const assistantMessage = await prisma.message.create({
       data: { role: "assistant", content: result.content, conversationId: conv.id }
     });
+
+    const updatedHistory = [
+      ...persistedHistory,
+      ...inbound,
+      { role: "assistant", content: result.content }
+    ];
+    const olderPortion = updatedHistory.slice(
+      0,
+      Math.max(0, updatedHistory.length - MAX_RECENT_CONTEXT_MESSAGES)
+    );
+    const summaryText = buildSummaryMessage(olderPortion);
+    if (summaryText) {
+      if (memoryMessage) {
+        await prisma.message.update({
+          where: { id: memoryMessage.id },
+          data: { content: summaryText }
+        });
+      } else {
+        await prisma.message.create({
+          data: {
+            role: MEMORY_MESSAGE_ROLE,
+            content: summaryText,
+            conversationId: conv.id
+          }
+        });
+      }
+    } else if (memoryMessage) {
+      await prisma.message.delete({ where: { id: memoryMessage.id } });
+    }
 
     const nextSuggestions = getPostReplySuggestions(result.content || "", "en", 3);
 
