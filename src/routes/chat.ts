@@ -407,7 +407,8 @@ export async function chatRoutes(app: FastifyInstance) {
     const p = Providers[chosenProvider];
     let result;
     try {
-      const adapted: ChatMessage[] = messagesForLLM.map(m => ({
+      const normalizedMessages = adaptMessagesForProvider(chosenProvider as ProviderName, messagesForLLM);
+      const adapted: ChatMessage[] = normalizedMessages.map(m => ({
         role: (m.role as "user" | "system" | "assistant" | "tool"),
         content: m.content
       }));
