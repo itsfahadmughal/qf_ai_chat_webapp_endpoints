@@ -1,5 +1,6 @@
 // src/routes/prompts.ts
 import type { FastifyInstance, preHandlerHookHandler } from "fastify";
+import { TrainingExampleSource, TrainingVectorStatus } from "@prisma/client";
 import { prisma } from "../db.js";
 import { z } from "zod";
 import { assertHotelAndProvider } from "../middleware/hotelGuard.js";
@@ -527,6 +528,54 @@ export async function promptRoutes(app: FastifyInstance) {
       update: { feedbackScore, reaction },
       create: { promptId: id, userId: user.id, feedbackScore, reaction }
     });
+
+    const aggregates = await prisma.promptFeedback.aggregate({
+      where: { promptId: id },
+      _avg: { feedbackScore: true },
+      _count: { id: true }
+    });
+
+    const qualityScore = aggregates._avg.feedbackScore ?? null;
+    const feedbackCount = aggregates._count.id;
+
+    await prisma.prompt.update({
+      where: { id },
+      data: {
+        qualityScore,
+        feedbackCount,
+        lastFeedbackAt: new Date()
+      }
+    });
+
+    if (qualityScore !== null && qualityScore >= 60) {
+      const promptRecord = await prisma.prompt.findUnique({
+        where: { id },
+        select: { id: true, title: true, body: true, hotelId: true }
+      });
+      if (promptRecord) {
+        await prisma.trainingExample.upsert({
+          where: { promptId: promptRecord.id },
+          update: {
+            inputText: promptRecord.title ?? "",
+            outputText: promptRecord.body,
+            score: qualityScore,
+            metadata: { promptId: promptRecord.id, title: promptRecord.title },
+            vectorStatus: TrainingVectorStatus.pending
+          },
+          create: {
+            hotelId: promptRecord.hotelId,
+            source: TrainingExampleSource.prompt,
+            promptId: promptRecord.id,
+            inputText: promptRecord.title ?? "",
+            outputText: promptRecord.body,
+            score: qualityScore,
+            metadata: { promptId: promptRecord.id, title: promptRecord.title }
+          }
+        });
+      }
+    } else {
+      await prisma.trainingExample.deleteMany({ where: { promptId: id } });
+    }
 
     return {
       ok: true,

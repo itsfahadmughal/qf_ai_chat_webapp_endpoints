@@ -21,6 +21,33 @@ enum UserRole {
   reader
 }
 
+enum TrainingExampleSource {
+  conversation
+  prompt
+}
+
+enum TrainingVectorStatus {
+  pending
+  uploading
+  uploaded
+  failed
+}
+
+enum FineTuneStatus {
+  pending
+  uploading
+  running
+  succeeded
+  failed
+  canceled
+}
+
+enum FineTuneModelStatus {
+  pending
+  active
+  retired
+}
+
 model Hotel {
   id                      String                    @id @default(cuid())
   name                    String
@@ -35,6 +62,9 @@ model Hotel {
   MCPServer               MCPServer[]
   promptCategories        PromptCategory[]
   vectorStores            HotelVectorStore[]
+  trainingExamples        TrainingExample[]
+  fineTuneJobs            FineTuneJob[]
+  fineTuneModels          FineTuneModel[]
 }
 
 model HotelProviderToggle {
@@ -89,18 +119,22 @@ model Conversation {
 }
 
 model Message {
-  id               String            @id @default(cuid())
-  role             String // "system" | "user" | "assistant" | "tool"
-  content          String
-  createdAt        DateTime          @default(now())
-  conversationId   String
-  conversation     Conversation      @relation(fields: [conversationId], references: [id])
-  promptTokens     Int?
-  completionTokens Int?
-  totalTokens      Int?
-  provider         Provider?
-  model            String?
-  MessageFeedback  MessageFeedback[]
+  id                 String            @id @default(cuid())
+  role               String // "system" | "user" | "assistant" | "tool"
+  content            String
+  createdAt          DateTime          @default(now())
+  conversationId     String
+  conversation       Conversation      @relation(fields: [conversationId], references: [id])
+  promptTokens       Int?
+  completionTokens   Int?
+  totalTokens        Int?
+  provider           Provider?
+  model              String?
+  qualityScore       Float?
+  feedbackAt         DateTime?
+  includedInTraining Boolean           @default(false)
+  trainingExamples   TrainingExample[]
+  MessageFeedback    MessageFeedback[]
 }
 
 model PromptCategory {
@@ -114,25 +148,29 @@ model PromptCategory {
 }
 
 model Prompt {
-  id            String           @id @default(cuid())
-  hotelId       String
-  hotel         Hotel            @relation(fields: [hotelId], references: [id])
-  authorId      String
-  author        User             @relation(fields: [authorId], references: [id])
-  departmentId  String?
-  department    Department?      @relation(fields: [departmentId], references: [id])
-  title         String
-  body          String // the actual prompt text
-  categoryId    String?
-  category      PromptCategory?  @relation(fields: [categoryId], references: [id]) // relation
-  tags          String[]         @default([])
-  version       String? // e.g. "v1.2"
-  archived      Boolean          @default(false)
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  feedback      PromptFeedback[]
-  conversations Conversation[]
-  assignedUsers User[]           @relation("PromptAssignedUser")
+  id               String            @id @default(cuid())
+  hotelId          String
+  hotel            Hotel             @relation(fields: [hotelId], references: [id])
+  authorId         String
+  author           User              @relation(fields: [authorId], references: [id])
+  departmentId     String?
+  department       Department?       @relation(fields: [departmentId], references: [id])
+  title            String
+  body             String // the actual prompt text
+  categoryId       String?
+  category         PromptCategory?   @relation(fields: [categoryId], references: [id]) // relation
+  tags             String[]          @default([])
+  version          String? // e.g. "v1.2"
+  archived         Boolean           @default(false)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  feedback         PromptFeedback[]
+  conversations    Conversation[]
+  assignedUsers    User[]            @relation("PromptAssignedUser")
+  trainingExamples TrainingExample[]
+  qualityScore     Float?
+  feedbackCount    Int               @default(0)
+  lastFeedbackAt   DateTime?
 
   @@index([hotelId, archived])
   @@index([departmentId])
@@ -284,6 +322,71 @@ model ToolCallLog {
   @@index([hotelId])
   @@index([serverId])
   @@index([conversationId])
+}
+
+model TrainingExample {
+  id               String                @id @default(cuid())
+  hotelId          String
+  hotel            Hotel                 @relation(fields: [hotelId], references: [id])
+  source           TrainingExampleSource
+  messageId        String?
+  message          Message?              @relation(fields: [messageId], references: [id])
+  promptId         String?
+  prompt           Prompt?               @relation(fields: [promptId], references: [id])
+  inputText        String
+  outputText       String
+  score            Float?
+  metadata         Json?
+  vectorStatus     TrainingVectorStatus  @default(pending)
+  vectorFileId     String?
+  vectorUploadedAt DateTime?
+  error            String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  @@unique([messageId])
+  @@unique([promptId])
+  @@index([hotelId, vectorStatus])
+  @@index([messageId])
+  @@index([promptId])
+}
+
+model FineTuneJob {
+  id             String          @id @default(cuid())
+  hotelId        String
+  hotel          Hotel           @relation(fields: [hotelId], references: [id])
+  provider       Provider        @default(openai)
+  status         FineTuneStatus  @default(pending)
+  datasetFileId  String?
+  openaiJobId    String?
+  resultingModel String?
+  error          String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  models         FineTuneModel[]
+
+  @@index([hotelId, status])
+}
+
+model FineTuneModel {
+  id            String              @id @default(cuid())
+  hotelId       String
+  hotel         Hotel               @relation(fields: [hotelId], references: [id])
+  provider      Provider            @default(openai)
+  jobId         String?
+  job           FineTuneJob?        @relation(fields: [jobId], references: [id])
+  modelId       String
+  status        FineTuneModelStatus @default(pending)
+  metadata      Json?
+  activatedAt   DateTime?
+  deactivatedAt DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([hotelId, provider, modelId])
+  @@index([hotelId, provider])
 }
 
 model HotelVectorStore {

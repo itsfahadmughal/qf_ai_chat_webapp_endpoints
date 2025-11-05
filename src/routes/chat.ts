@@ -1,5 +1,6 @@
 // src/routes/chat.ts
 import type { FastifyInstance } from "fastify";
+import { FineTuneModelStatus, Provider as PrismaProvider } from "@prisma/client";
 import { prisma } from "../db.js";
 import { z } from "zod";
 import { Providers } from "../providers/index.js";
@@ -176,6 +177,18 @@ export async function chatRoutes(app: FastifyInstance) {
     }
     if (!chosenProvider) return reply.code(403).send({ error: "No provider available (hotel or user disabled all)" });
 
+    const activeFineTuneModel =
+      chosenProvider === "openai"
+        ? await prisma.fineTuneModel.findFirst({
+            where: {
+              hotelId: hotelIdForPolicy,
+              provider: PrismaProvider.openai,
+              status: FineTuneModelStatus.active
+            },
+            orderBy: { activatedAt: "desc" }
+          })
+        : null;
+
     const persistedHistory: Array<{ role: string; content: string }> = [];
     let memoryMessage: { id: string; content: string } | null = null;
     if (existingConv) {
@@ -206,10 +219,13 @@ export async function chatRoutes(app: FastifyInstance) {
     const continuingSameProvider =
       !!existingConv && (provider == null || existingConv.provider === chosenProvider);
 
+    const fineTuneModelId = activeFineTuneModel?.modelId;
+
     const chosenModel =
       model ||
       (continuingSameProvider ? existingConv?.model : undefined) ||
       perUserModel ||
+      fineTuneModelId ||
       hotelDefault ||
       (chosenProvider === "openai"
         ? process.env.OPENAI_MODEL
@@ -506,6 +522,7 @@ export async function chatRoutes(app: FastifyInstance) {
       assistantMessageId: assistantMessage.id,
       provider: chosenProvider,
       model: chosenModel,
+      fineTuneModelId: fineTuneModelId ?? null,
       content: result.content,
       usage: result.usage,
       nextSuggestions,
