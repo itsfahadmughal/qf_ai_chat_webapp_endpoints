@@ -1,12 +1,19 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../db.js";
 import { z } from "zod";
+import { ensureDefaultVectorStore } from "../lib/vectorStores.js";
 
 export async function hotelRoutes(app: FastifyInstance) {
   // Create hotel
   app.post("/hotels", async (req, reply) => {
     const body = z.object({ name: z.string() }).parse(req.body);
-    return prisma.hotel.create({ data: { name: body.name } });
+    const hotel = await prisma.hotel.create({ data: { name: body.name } });
+    try {
+      await ensureDefaultVectorStore(hotel.id, req.log);
+    } catch (err) {
+      req.log?.warn?.({ err, hotelId: hotel.id }, "default vector store provisioning failed");
+    }
+    return hotel;
   });
 
    app.get("/hotels", async (req: any) => {

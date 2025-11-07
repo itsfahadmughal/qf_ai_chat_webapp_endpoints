@@ -20,178 +20,56 @@ function toISOString(value: Date | null | undefined) {
 }
 
 async function buildFineTuneDataset(hotelId: string) {
-  const [prompts, conversations, messages, messageFeedbacks, promptFeedbacks, trainingExamples] =
-    await Promise.all([
-      prismaAny.prompt.findMany({
-        where: { hotelId },
-        select: {
-          id: true,
-          title: true,
-          body: true,
-          tags: true,
-          version: true,
-          departmentId: true,
-          archived: true,
-          createdAt: true,
-          updatedAt: true,
-          qualityScore: true,
-          feedbackCount: true
-        }
-      }),
-      prismaAny.conversation.findMany({
-        where: { hotelId },
-        select: {
-          id: true,
-          userId: true,
-          promptId: true,
-          provider: true,
-          model: true,
-          archived: true,
-          createdAt: true,
-          updatedAt: true
-        }
-      }),
-      prismaAny.message.findMany({
-        where: { conversation: { hotelId } },
-        select: {
-          id: true,
-          conversationId: true,
-          role: true,
-          content: true,
-          createdAt: true,
-          qualityScore: true,
-          conversation: { select: { promptId: true } }
-        }
-      }),
-      prismaAny.messageFeedback.findMany({
-        where: { message: { conversation: { hotelId } } },
-        select: {
-          id: true,
-          messageId: true,
-          userId: true,
-          reaction: true,
-          reason: true,
-          comment: true,
-          createdAt: true
-        }
-      }),
-      prismaAny.promptFeedback.findMany({
-        where: { prompt: { hotelId } },
-        select: {
-          id: true,
-          promptId: true,
-          userId: true,
-          feedbackScore: true,
-          reaction: true,
-          createdAt: true
-        }
-      }),
-      prisma.trainingExample.findMany({
-        where: { hotelId },
-        select: {
-          id: true,
-          inputText: true,
-          outputText: true,
-          score: true,
-          metadata: true,
-          source: true,
-          createdAt: true
-        }
-      })
-    ]);
+  const [hotel, trainingExamples] = await Promise.all([
+    prisma.hotel.findUnique({ where: { id: hotelId }, select: { name: true } }),
+    prisma.trainingExample.findMany({
+      where: { hotelId },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        inputText: true,
+        outputText: true,
+        score: true,
+        metadata: true,
+        source: true
+      }
+    })
+  ]);
+
+  const systemPromptBase = hotel?.name
+    ? `You are the AI assistant for ${hotel.name}. Be accurate, concise, and grounded in hotel knowledge.`
+    : "You are a helpful AI assistant for hospitality teams. Be accurate, concise, and grounded in hotel knowledge.";
 
   const lines: string[] = [];
 
-  for (const prompt of prompts) {
-    lines.push(
-      JSON.stringify({
-        type: "prompt",
-        id: prompt.id,
-        title: prompt.title,
-        body: prompt.body,
-        tags: prompt.tags,
-        version: prompt.version,
-        departmentId: prompt.departmentId ?? null,
-        archived: prompt.archived,
-        qualityScore: prompt.qualityScore ?? null,
-        feedbackCount: prompt.feedbackCount ?? 0,
-        createdAt: toISOString(prompt.createdAt),
-        updatedAt: toISOString(prompt.updatedAt)
-      })
-    );
-  }
-
-  for (const conversation of conversations) {
-    lines.push(
-      JSON.stringify({
-        type: "conversation",
-        id: conversation.id,
-        userId: conversation.userId,
-        promptId: conversation.promptId ?? null,
-        provider: conversation.provider,
-        model: conversation.model,
-        archived: conversation.archived,
-        createdAt: toISOString(conversation.createdAt),
-        updatedAt: toISOString(conversation.updatedAt)
-      })
-    );
-  }
-
-  for (const message of messages) {
-    lines.push(
-      JSON.stringify({
-        type: "message",
-        id: message.id,
-        conversationId: message.conversationId,
-        promptId: message.conversation?.promptId ?? null,
-        role: message.role,
-        content: message.content,
-        qualityScore: message.qualityScore ?? null,
-        createdAt: toISOString(message.createdAt)
-      })
-    );
-  }
-
-  for (const feedback of messageFeedbacks) {
-    lines.push(
-      JSON.stringify({
-        type: "message_feedback",
-        id: feedback.id,
-        messageId: feedback.messageId,
-        userId: feedback.userId,
-        reaction: feedback.reaction,
-        reason: feedback.reason ?? null,
-        comment: feedback.comment ?? null,
-        createdAt: toISOString(feedback.createdAt)
-      })
-    );
-  }
-
-  for (const feedback of promptFeedbacks) {
-    lines.push(
-      JSON.stringify({
-        type: "prompt_feedback",
-        id: feedback.id,
-        promptId: feedback.promptId,
-        userId: feedback.userId,
-        feedbackScore: feedback.feedbackScore,
-        reaction: feedback.reaction ?? null,
-        createdAt: toISOString(feedback.createdAt)
-      })
-    );
-  }
-
   for (const example of trainingExamples) {
+    if (!example.inputText || !example.outputText) continue;
+    const systemPrompt =
+      example.source === "conversation_summary"
+        ? `${systemPromptBase} Use the provided summary of a past conversation to stay consistent with prior interactions.`
+        : systemPromptBase;
+
+    const extraMetadata =
+      example.metadata && typeof example.metadata === "object" && !Array.isArray(example.metadata)
+        ? (example.metadata as Record<string, unknown>)
+        : example.metadata != null
+        ? { value: example.metadata }
+        : {};
+
+    const metadata = {
+      source: example.source,
+      score: example.score ?? null,
+      ...extraMetadata
+    };
+
     lines.push(
       JSON.stringify({
-        type: "training_example",
-        id: example.id,
-        input: example.inputText,
-        output: example.outputText,
-        score: example.score ?? null,
-        metadata: example.metadata ?? null,
-        source: example.source,
-        createdAt: toISOString(example.createdAt)
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: example.inputText },
+          { role: "assistant", content: example.outputText }
+        ],
+        metadata
       })
     );
   }
@@ -215,6 +93,23 @@ function mapOpenAIStatus(status: string | null | undefined): FineTuneStatus {
     default:
       return FineTuneStatus.running;
   }
+}
+
+function resolveFineTuneBaseModel(): string {
+  const candidateRaw =
+    process.env.FINE_TUNE_BASE_MODEL ||
+    process.env.OPENAI_MODEL ||
+    "gpt-4o-mini-2024-07-18";
+  const candidate = candidateRaw.trim();
+  const normalized = candidate.toLowerCase();
+  const replacements: Record<string, string> = {
+    "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
+    "gpt-4o": "gpt-4o-mini-2024-07-18",
+    "gpt-4.1": "gpt-4o-mini-2024-07-18",
+    "gpt-4.1-mini": "gpt-4o-mini-2024-07-18"
+  };
+  if (replacements[normalized]) return replacements[normalized];
+  return candidate || "gpt-4o-mini-2024-07-18";
 }
 
 export async function processFineTuneJob(jobId: string, logger?: LoggerLike) {
@@ -307,10 +202,7 @@ export async function processFineTuneJob(jobId: string, logger?: LoggerLike) {
 
   try {
     const suffix = `hotel-${job.hotelId}-${Date.now()}`;
-    const baseModel =
-      process.env.FINE_TUNE_BASE_MODEL ||
-      process.env.OPENAI_MODEL ||
-      "gpt-4o-mini";
+    const baseModel = resolveFineTuneBaseModel();
     const remoteJob = await client.fineTuning.jobs.create({
       model: baseModel,
       training_file: uploadedFileId!,

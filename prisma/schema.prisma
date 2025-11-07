@@ -6,7 +6,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL") // pooled
-  directUrl = env("DIRECT_URL") // direct
+  //directUrl = env("DIRECT_URL") // direct
 }
 
 enum Provider {
@@ -24,6 +24,7 @@ enum UserRole {
 enum TrainingExampleSource {
   conversation
   prompt
+  conversation_summary
 }
 
 enum TrainingVectorStatus {
@@ -101,21 +102,22 @@ model User {
 }
 
 model Conversation {
-  id          String        @id @default(cuid())
-  title       String?
-  userId      String
-  user        User          @relation(fields: [userId], references: [id])
-  hotelId     String
-  hotel       Hotel         @relation(fields: [hotelId], references: [id])
-  promptId    String?
-  prompt      Prompt?       @relation(fields: [promptId], references: [id])
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  provider    Provider
-  model       String
-  archived    Boolean       @default(false)
-  messages    Message[]
-  ToolCallLog ToolCallLog[]
+  id              String            @id @default(cuid())
+  title           String?
+  userId          String
+  user            User              @relation(fields: [userId], references: [id])
+  hotelId         String
+  hotel           Hotel             @relation(fields: [hotelId], references: [id])
+  promptId        String?
+  prompt          Prompt?           @relation(fields: [promptId], references: [id])
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  provider        Provider
+  model           String
+  archived        Boolean           @default(false)
+  messages        Message[]
+  ToolCallLog     ToolCallLog[]
+  TrainingExample TrainingExample[]
 }
 
 model Message {
@@ -333,6 +335,8 @@ model TrainingExample {
   message          Message?              @relation(fields: [messageId], references: [id])
   promptId         String?
   prompt           Prompt?               @relation(fields: [promptId], references: [id])
+  conversationId   String?
+  conversation     Conversation?         @relation(fields: [conversationId], references: [id])
   inputText        String
   outputText       String
   score            Float?
@@ -346,6 +350,7 @@ model TrainingExample {
 
   @@unique([messageId])
   @@unique([promptId])
+  @@index([conversationId])
   @@index([hotelId, vectorStatus])
   @@index([messageId])
   @@index([promptId])

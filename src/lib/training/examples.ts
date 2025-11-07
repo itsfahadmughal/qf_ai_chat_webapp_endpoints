@@ -107,3 +107,61 @@ export async function collectTrainingExamplesForHotel(
 
   return { created, updated };
 }
+
+type ConversationSummaryParams = {
+  hotelId: string;
+  conversationId: string;
+  summary: string;
+  title?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export async function upsertConversationSummaryExample({
+  hotelId,
+  conversationId,
+  summary,
+  title,
+  metadata
+}: ConversationSummaryParams): Promise<void> {
+  const content = summary?.trim();
+  if (!content) return;
+
+  const existing = await prisma.trainingExample.findFirst({
+    where: {
+      conversationId,
+      source: TrainingExampleSource.conversation_summary
+    }
+  });
+
+  const payload = {
+    inputText: content,
+    outputText: content,
+    metadata: {
+      conversationId,
+      title: title ?? null,
+      ...(metadata ?? {})
+    }
+  };
+
+  if (existing) {
+    await prisma.trainingExample.update({
+      where: { id: existing.id },
+      data: {
+        ...payload,
+        vectorStatus: TrainingVectorStatus.pending,
+        error: null
+      }
+    });
+    return;
+  }
+
+  await prisma.trainingExample.create({
+    data: {
+      hotelId,
+      source: TrainingExampleSource.conversation_summary,
+      conversationId,
+      ...payload,
+      vectorStatus: TrainingVectorStatus.pending
+    }
+  });
+}

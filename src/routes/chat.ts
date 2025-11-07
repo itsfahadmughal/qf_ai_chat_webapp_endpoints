@@ -11,6 +11,9 @@ import type { ChatMessage } from "../providers/types.js";
 import { injectBrevoKeyIfNeeded } from "../lib/byok.js";
 import { getHotelOpenAIClient, searchVectorStore } from "../lib/openai.js";
 import { scheduleFineTuneUpload } from "../lib/fineTuning.js";
+import { upsertConversationSummaryExample } from "../lib/training/examples.js";
+import { syncTrainingExamplesToVectorStore } from "../lib/training/vectorStore.js";
+import { ensureDefaultVectorStore } from "../lib/vectorStores.js";
 
 const prismaAny = prisma as any;
 
@@ -267,15 +270,30 @@ export async function chatRoutes(app: FastifyInstance) {
     let messagesForLLM = [...priorMessagesForLLM, ...messages];
     let knowledgeContextForDB: string | undefined;
     let knowledgeUsage: { vectorStoreId: string; chunkCount: number } | undefined;
+    let knowledgeConfig = knowledge ?? null;
+    const knowledgeExplicitlyDisabled = knowledge?.enabled === false;
+    const autoEnableKnowledge =
+      !knowledgeExplicitlyDisabled &&
+      (chosenProvider as ProviderName) === "openai" &&
+      (!knowledgeConfig || knowledgeConfig.enabled === undefined);
+    if (autoEnableKnowledge) {
+      knowledgeConfig = { ...(knowledgeConfig ?? {}), enabled: true };
+    }
 
-    if (knowledge?.enabled) {
+    if (knowledgeConfig?.enabled) {
       if ((chosenProvider as ProviderName) !== "openai") {
-        return reply.code(400).send({ error: "vector_store_not_supported_for_provider" });
+        if (autoEnableKnowledge) {
+          knowledgeConfig = null;
+        } else {
+          return reply.code(400).send({ error: "vector_store_not_supported_for_provider" });
+        }
       }
+    }
 
-      const storeRecord = knowledge.vectorStoreId
+    if (knowledgeConfig?.enabled) {
+      let storeRecord = knowledgeConfig.vectorStoreId
         ? await prisma.hotelVectorStore.findFirst({
-            where: { id: knowledge.vectorStoreId, hotelId: hotelIdForPolicy }
+            where: { id: knowledgeConfig.vectorStoreId, hotelId: hotelIdForPolicy }
           })
         : await prisma.hotelVectorStore.findFirst({
             where: { hotelId: hotelIdForPolicy, isDefault: true }
@@ -286,60 +304,85 @@ export async function chatRoutes(app: FastifyInstance) {
           }));
 
       if (!storeRecord) {
-        return reply.code(400).send({ error: "vector_store_unavailable" });
-      }
-
-      const latestUserMessage = [...messages].reverse().find((m) => m.role === "user");
-      if (!latestUserMessage) {
-        return reply.code(400).send({ error: "no_user_message_for_retrieval" });
-      }
-
-      let openaiClient;
-      try {
-        openaiClient = await getHotelOpenAIClient(hotelIdForPolicy);
-      } catch (err: any) {
-        return reply.code(400).send({ error: "openai_credential_missing", details: String(err?.message ?? err) });
-      }
-
-      try {
-        const matches = await searchVectorStore(openaiClient, {
-          vectorStoreId: storeRecord.openaiId,
-          query: latestUserMessage.content,
-          maxResults: knowledge.topK ?? 5
-        });
-
-        const chunks = matches
-          .map((item: any, idx: number) => {
-            const texts = (item?.content ?? [])
-              .map((c: any) => {
-                if (!c) return null;
-                if (typeof c === "string") return c.trim();
-                if (typeof c.text === "string") return c.text.trim();
-                if (typeof c.text?.value === "string") return c.text.value.trim();
-                return null;
-              })
-              .filter((txt: string | null): txt is string => !!txt);
-            if (!texts.length) return null;
-            const rawScore = (item as any)?.score;
-            const score =
-              typeof rawScore === "number"
-                ? rawScore.toFixed(3)
-                : rawScore != null
-                ? String(rawScore)
-                : "n/a";
-            return `Source ${idx + 1} (score ${score}):\n${texts.join("\n")}`;
-          })
-          .filter((chunk): chunk is string => typeof chunk === "string");
-
-        if (chunks.length) {
-          const contextMessage = `Use the retrieved knowledge when relevant.\n\n${chunks.join("\n\n")}`;
-          messagesForLLM.unshift({ role: "system", content: contextMessage });
-          knowledgeContextForDB = contextMessage;
-          knowledgeUsage = { vectorStoreId: storeRecord.id, chunkCount: chunks.length };
+        try {
+          storeRecord = await ensureDefaultVectorStore(hotelIdForPolicy, req.log);
+        } catch (err) {
+          req.log.warn?.({ err, hotelId: hotelIdForPolicy }, "default vector store creation failed during chat");
         }
-      } catch (err: any) {
-        req.log.error({ err }, "vector store query failed");
-        return reply.code(500).send({ error: "vector_store_query_failed", details: String(err?.message ?? err) });
+      }
+
+      if (!storeRecord) {
+        if (autoEnableKnowledge) {
+          knowledgeConfig = null;
+        } else {
+          return reply.code(400).send({ error: "vector_store_unavailable" });
+        }
+      }
+
+      if (knowledgeConfig?.enabled && storeRecord) {
+        const latestUserMessage = [...messages].reverse().find((m) => m.role === "user");
+        if (!latestUserMessage) {
+          return reply.code(400).send({ error: "no_user_message_for_retrieval" });
+        }
+
+        let openaiClient;
+        try {
+          openaiClient = await getHotelOpenAIClient(hotelIdForPolicy);
+        } catch (err: any) {
+          if (autoEnableKnowledge) {
+            knowledgeConfig = null;
+            openaiClient = null;
+          } else {
+            return reply.code(400).send({ error: "openai_credential_missing", details: String(err?.message ?? err) });
+          }
+        }
+        if (knowledgeConfig?.enabled && !openaiClient) {
+          knowledgeConfig = null;
+        }
+        if (knowledgeConfig?.enabled && openaiClient) {
+          try {
+            const matches = await searchVectorStore(openaiClient, {
+              vectorStoreId: storeRecord.openaiId,
+              query: latestUserMessage.content,
+              maxResults: knowledgeConfig.topK ?? 5
+            });
+
+            const chunks = matches
+              .map((item: any, idx: number) => {
+                const texts = (item?.content ?? [])
+                  .map((c: any) => {
+                    if (!c) return null;
+                    if (typeof c === "string") return c.trim();
+                    if (typeof c.text === "string") return c.text.trim();
+                    if (typeof c.text?.value === "string") return c.text.value.trim();
+                    return null;
+                  })
+                  .filter((txt: string | null): txt is string => !!txt);
+                if (!texts.length) return null;
+                const rawScore = (item as any)?.score;
+                const score =
+                  typeof rawScore === "number"
+                    ? rawScore.toFixed(3)
+                    : rawScore != null
+                    ? String(rawScore)
+                    : "n/a";
+                return `Source ${idx + 1} (score ${score}):\n${texts.join("\n")}`;
+              })
+              .filter((chunk): chunk is string => typeof chunk === "string");
+
+            if (chunks.length) {
+              const contextMessage = `Use the retrieved knowledge when relevant.\n\n${chunks.join("\n\n")}`;
+              messagesForLLM.unshift({ role: "system", content: contextMessage });
+              knowledgeContextForDB = contextMessage;
+              knowledgeUsage = { vectorStoreId: storeRecord.id, chunkCount: chunks.length };
+            }
+          } catch (err: any) {
+            req.log.error({ err }, "vector store query failed");
+            if (!autoEnableKnowledge) {
+              return reply.code(500).send({ error: "vector_store_query_failed", details: String(err?.message ?? err) });
+            }
+          }
+        }
       }
     }
     let toolTextForDB: string | undefined; // stored in DB as role "tool"
@@ -495,7 +538,8 @@ export async function chatRoutes(app: FastifyInstance) {
       0,
       Math.max(0, updatedHistory.length - MAX_RECENT_CONTEXT_MESSAGES)
     );
-    const summaryText = buildSummaryMessage(olderPortion);
+    const summaryCandidate = olderPortion.length ? olderPortion : updatedHistory;
+    const summaryText = buildSummaryMessage(summaryCandidate);
     if (summaryText) {
       if (memoryMessage) {
         await prisma.message.update({
@@ -510,6 +554,19 @@ export async function chatRoutes(app: FastifyInstance) {
             conversationId: conv.id
           }
         });
+      }
+      try {
+        await upsertConversationSummaryExample({
+          hotelId: hotelIdForPolicy,
+          conversationId: conv.id,
+          summary: summaryText,
+          title: conv.title ?? null
+        });
+        syncTrainingExamplesToVectorStore(hotelIdForPolicy).catch((err: any) => {
+          req.log.warn({ err, hotelId: hotelIdForPolicy }, "conversation summary vector sync failed");
+        });
+      } catch (err) {
+        req.log.warn({ err, conversationId: conv.id }, "conversation summary training example failed");
       }
     } else if (memoryMessage) {
       await prisma.message.delete({ where: { id: memoryMessage.id } });
