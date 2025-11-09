@@ -567,6 +567,79 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
+  app.delete("/rag/vector-stores/:id/files/:fileId", async (req: any, reply) => {
+    try {
+      const { id, fileId } = req.params as { id: string; fileId: string };
+      const { hotelId } = HotelScopedBody.parse(req.query ?? {});
+
+      const record = await loadVectorStoreForHotel(id, hotelId);
+      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+
+      const client = await getHotelOpenAIClientOrError(hotelId, reply);
+      if (!client) return;
+      const vectorStores = getVectorStoresApi(client);
+
+      let sourceFileId: string | null = null;
+
+      // Try to retrieve the vector store file to discover the underlying source file id
+      try {
+        const retrieved = await vectorStores.files.retrieve(record.openaiId, fileId);
+        // Some SDK versions expose 'file_id', others nest it; be defensive.
+        sourceFileId = (retrieved as any)?.file_id ?? (retrieved as any)?.file?.id ?? null;
+      } catch (err: any) {
+        // If it's a 404 we still attempt to delete to ensure idempotency
+        if (err?.status !== 404) {
+          req.log.warn({ err, fileId }, "failed to retrieve vector store file before deletion");
+        }
+      }
+
+      // Delete the vector store file (association)
+      try {
+        if (typeof vectorStores.files.del === "function") {
+          await vectorStores.files.del(record.openaiId, fileId);
+        } else if (typeof vectorStores.files.delete === "function") {
+          await vectorStores.files.delete(record.openaiId, fileId);
+        } else {
+          // Fallback for SDKs using a top-level delete
+          await (vectorStores as any).files.remove(record.openaiId, fileId);
+        }
+      } catch (err: any) {
+        const status = err?.status === 404 ? 404 : 500;
+        return reply.code(status).send({ error: "vector_store_file_delete_failed", details: String(err?.message ?? err) });
+      }
+
+      // Best-effort: also delete the underlying uploaded source file in OpenAI Files
+      let sourceFileDeleted = false;
+      if (sourceFileId) {
+        try {
+          if (typeof (client.files as any).del === "function") {
+            await (client.files as any).del(sourceFileId);
+          } else if (typeof (client.files as any).delete === "function") {
+            await (client.files as any).delete(sourceFileId);
+          }
+          sourceFileDeleted = true;
+        } catch (err: any) {
+          // Non-fatal; log and continue
+          if (err?.status !== 404) {
+            req.log.warn({ err, sourceFileId }, "failed to delete underlying source file");
+          }
+        }
+      }
+
+      return {
+        ok: true,
+        vectorStoreId: record.id,
+        fileId,
+        sourceFileId,
+        sourceFileDeleted
+      };
+    } catch (err: any) {
+      req.log.error({ err }, "vector store file delete failed");
+      return reply.code(500).send({ error: "vector_store_file_delete_failed", details: String(err?.message ?? err) });
+    }
+  });
+
+
   app.post("/openai/fine-tuning/files", async (req: any, reply) => {
     try {
       let collected;
