@@ -66,6 +66,7 @@ model Hotel {
   trainingExamples        TrainingExample[]
   fineTuneJobs            FineTuneJob[]
   fineTuneModels          FineTuneModel[]
+  promptUsages            PromptUsage[]             @relation("PromptUsageHotel")
 }
 
 model HotelProviderToggle {
@@ -99,6 +100,7 @@ model User {
   MessageFeedback    MessageFeedback[]
   ToolCallLog        ToolCallLog[]
   PromptFeedback     PromptFeedback[]
+  promptUsages       PromptUsage[]        @relation("PromptUsageUsedBy")
 }
 
 model Conversation {
@@ -173,9 +175,30 @@ model Prompt {
   qualityScore     Float?
   feedbackCount    Int               @default(0)
   lastFeedbackAt   DateTime?
+  usages           PromptUsage[]     @relation("PromptUsagePrompt")
 
   @@index([hotelId, archived])
   @@index([departmentId])
+}
+
+model PromptUsage {
+  id        String   @id @default(cuid())
+  promptId  String
+  prompt    Prompt   @relation("PromptUsagePrompt", fields: [promptId], references: [id])
+  hotelId   String
+  hotel     Hotel    @relation("PromptUsageHotel", fields: [hotelId], references: [id])
+  usedById  String?
+  usedBy    User?    @relation("PromptUsageUsedBy", fields: [usedById], references: [id])
+  source    String?
+  notes     String?
+  count     Int      @default(1)
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([hotelId, promptId])
+  @@index([promptId])
+  @@index([hotelId, usedById])
 }
 
 model UserPreference {

@@ -30,6 +30,35 @@ const ListVectorStoreFilesQuery = z.object({
   after: z.string().optional()
 });
 
+const UpdateVectorStoreFileBody = z
+  .object({
+    hotelId: z.string().min(1, "hotelId is required"),
+    title: z.string().optional(),
+    language: z.string().optional(),
+    module: z.string().optional(),
+    moduleAssignment: z.string().optional(),
+    description: z.string().optional(),
+    tags: z.union([z.string(), z.array(z.string())]).optional(),
+    attributes: z
+      .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+      .optional(),
+    clearAttributes: z.boolean().optional()
+  })
+  .refine(
+    (body) =>
+      Boolean(
+        body.title ||
+          body.language ||
+          body.module ||
+          body.moduleAssignment ||
+          body.description ||
+          body.tags !== undefined ||
+          body.attributes ||
+          body.clearAttributes
+      ),
+    { message: "At least one field must be provided to update the file." }
+  );
+
 const FineTuneListQuery = z.object({
   hotelId: z.string().min(1, "hotelId is required"),
   purpose: z.enum(["fine-tune", "fine-tune-results", "assistants", "batch", "vision"]).optional()
@@ -453,6 +482,100 @@ export async function ragRoutes(app: FastifyInstance) {
       req.log.error({ err }, "vector store file upload failed");
       const status = err?.status === 404 ? 404 : 500;
       return reply.code(status).send({ error: "vector_store_upload_failed", details: String(err?.message ?? err) });
+    }
+  });
+
+  app.patch("/rag/vector-stores/:id/files/:fileId", async (req: any, reply) => {
+    try {
+      const { id, fileId } = req.params as { id: string; fileId: string };
+      const body = UpdateVectorStoreFileBody.parse(req.body ?? {});
+
+      const record = await loadVectorStoreForHotel(id, body.hotelId);
+      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+
+      const client = await getHotelOpenAIClientOrError(body.hotelId, reply);
+      if (!client) return;
+      const vectorStores = getVectorStoresApi(client);
+
+      const existing = await vectorStores.files.retrieve(record.openaiId, fileId);
+
+      const attributes: Record<string, string | number | boolean> = body.clearAttributes
+        ? {}
+        : { ...(existing.attributes ?? {}) };
+
+      const setAttr = (key: string, value?: string) => {
+        if (value === undefined) return;
+        const trimmed = value?.trim?.() ?? "";
+        if (!trimmed) {
+          delete attributes[key];
+        } else {
+          attributes[key] = trimmed;
+        }
+      };
+
+      setAttr("title", body.title);
+      setAttr("language", body.language);
+      setAttr("module", body.module);
+      setAttr("moduleAssignment", body.moduleAssignment);
+      setAttr("description", body.description);
+
+      if (body.tags !== undefined) {
+        let tagsArray: string[] | null = null;
+        if (Array.isArray(body.tags)) {
+          tagsArray = body.tags.map((tag) => tag.trim()).filter(Boolean);
+        } else if (typeof body.tags === "string") {
+          tagsArray = parseTagsField(body.tags);
+        }
+        if (tagsArray && tagsArray.length) {
+          attributes.tags = JSON.stringify(tagsArray);
+        } else {
+          delete attributes.tags;
+        }
+      }
+
+      if (body.attributes) {
+        for (const [key, value] of Object.entries(body.attributes)) {
+          if (value === null) {
+            delete attributes[key];
+            continue;
+          }
+          if (typeof value === "string") {
+            const trimmed = value.trim();
+            if (!trimmed) {
+              delete attributes[key];
+              continue;
+            }
+            attributes[key] = trimmed;
+            continue;
+          }
+          if (typeof value === "number" || typeof value === "boolean") {
+            attributes[key] = value;
+          }
+        }
+      }
+
+      attributes.hotelId = record.hotelId;
+      if (record.departmentId) {
+        attributes.departmentId = record.departmentId;
+      } else {
+        delete attributes.departmentId;
+      }
+
+      const updated = await vectorStores.files.update(record.openaiId, fileId, {
+        attributes: Object.keys(attributes).length ? attributes : null
+      });
+
+      return {
+        vectorStoreId: record.id,
+        file: updated
+      };
+    } catch (err: any) {
+      if (err instanceof ZodError) {
+        return reply.code(400).send({ error: "validation_error", details: err.errors });
+      }
+      req.log.error({ err }, "vector store file update failed");
+      const status = err?.status === 404 ? 404 : 500;
+      return reply.code(status).send({ error: "vector_store_file_update_failed", details: String(err?.message ?? err) });
     }
   });
 

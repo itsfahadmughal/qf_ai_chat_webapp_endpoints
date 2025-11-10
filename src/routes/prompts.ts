@@ -14,6 +14,20 @@ const PromptExportQuery = z.object({
   format: z.enum(["json", "jsonl", "word"]).default("json")
 });
 
+const TrackPromptUsageBody = z.object({
+  count: z.coerce.number().int().min(1).max(1000).default(1),
+  source: z.string().trim().optional(),
+  notes: z.string().trim().optional(),
+  metadata: z
+    .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+    .optional(),
+  usedById: z.string().optional()
+});
+
+const MostUsedPromptsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(10)
+});
+
 const prismaAny = prisma as any;
 
 type PromptFeedbackStats = {
@@ -358,6 +372,60 @@ export async function promptRoutes(app: FastifyInstance) {
     return row;
   });
 
+  // Track prompt usage manually
+  app.post("/prompts/:id/usage", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const { user } = await assertHotelAndProvider(req, reply);
+    if (reply.sent) return;
+    const { id } = req.params as { id: string };
+    const body = TrackPromptUsageBody.parse(req.body ?? {});
+
+    const prompt = await prisma.prompt.findFirst({
+      where: { id, hotelId: user.hotelId },
+      select: { id: true, hotelId: true }
+    });
+    if (!prompt) {
+      return reply.code(404).send({ error: "prompt_not_found" });
+    }
+
+    let usedById: string | null = null;
+    if (body.usedById) {
+      const allowedUser = await prisma.user.findFirst({
+        where: { id: body.usedById, hotelId: user.hotelId },
+        select: { id: true }
+      });
+      if (!allowedUser) {
+        return reply.code(400).send({ error: "invalid_user", details: "usedById must belong to the same hotel" });
+      }
+      usedById = allowedUser.id;
+    } else {
+      usedById = user.id;
+    }
+
+    const usage = await prisma.promptUsage.create({
+      data: {
+        promptId: prompt.id,
+        hotelId: prompt.hotelId,
+        usedById,
+        source: body.source || null,
+        notes: body.notes || null,
+        count: body.count,
+        metadata: body.metadata ?? null
+      }
+    });
+
+    return {
+      id: usage.id,
+      promptId: usage.promptId,
+      hotelId: usage.hotelId,
+      usedById: usage.usedById,
+      count: usage.count,
+      source: usage.source,
+      notes: usage.notes,
+      metadata: usage.metadata,
+      createdAt: usage.createdAt
+    };
+  });
+
   // UPDATE (author-only; scoped to same hotel)
   app.patch(
     "/prompts/:id",
@@ -678,6 +746,61 @@ export async function promptRoutes(app: FastifyInstance) {
 
   app.get("/prompts/feedbacks", { preHandler: app.authenticate }, async (req: any, reply) => {
     return listAuthorFeedbacks(req, reply);
+  });
+
+  app.get("/prompts/most-used", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const { user } = await assertHotelAndProvider(req, reply);
+    if (reply.sent) return;
+    const query = MostUsedPromptsQuery.parse(req.query ?? {});
+
+    const grouped = await prisma.promptUsage.groupBy({
+      by: ["promptId"],
+      where: { hotelId: user.hotelId },
+      _sum: { count: true },
+      orderBy: { _sum: { count: "desc" } },
+      take: query.limit
+    });
+
+    if (!grouped.length) {
+      return { prompts: [] };
+    }
+
+    const promptIds = grouped.map((entry) => entry.promptId);
+    const prompts = await prismaAny.prompt.findMany({
+      where: { id: { in: promptIds } },
+      include: {
+        author: { select: { id: true, email: true } },
+        category: { select: { id: true, name: true } },
+        department: { select: { id: true, name: true } },
+        assignedUsers: { select: { id: true, email: true } }
+      }
+    });
+    const promptMap = new Map(prompts.map((prompt: any) => [prompt.id, prompt]));
+    const feedbackStats = await fetchPromptFeedbackStats(promptIds);
+
+    const results = grouped
+      .map((entry) => {
+        const prompt = promptMap.get(entry.promptId);
+        if (!prompt) return null;
+        const stats = feedbackStats.get(entry.promptId);
+        return {
+          id: prompt.id,
+          title: prompt.title,
+          usageCount: entry._sum?.count ?? 0,
+          feedbackCount: stats?.feedbackCount ?? 0,
+          usageTag: resolveUsageTag(stats),
+          author: prompt.author,
+          category: prompt.category,
+          department: prompt.department,
+          assignedUsers: prompt.assignedUsers,
+          updatedAt: prompt.updatedAt,
+          createdAt: prompt.createdAt,
+          tags: prompt.tags
+        };
+      })
+      .filter(Boolean);
+
+    return { prompts: results };
   });
 
   // Usage summary (mostly used / saved / rarely used)
