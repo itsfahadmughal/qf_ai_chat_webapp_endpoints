@@ -409,7 +409,7 @@ export async function promptRoutes(app: FastifyInstance) {
         source: body.source || null,
         notes: body.notes || null,
         count: body.count,
-        metadata: body.metadata ?? null
+        metadata: body.metadata ?? undefined
       }
     });
 
@@ -775,7 +775,7 @@ export async function promptRoutes(app: FastifyInstance) {
         assignedUsers: { select: { id: true, email: true } }
       }
     });
-    const promptMap = new Map(prompts.map((prompt: any) => [prompt.id, prompt]));
+    const promptMap = new Map<string, any>(prompts.map((prompt: any) => [prompt.id, prompt]));
     const feedbackStats = await fetchPromptFeedbackStats(promptIds);
 
     const results = grouped
