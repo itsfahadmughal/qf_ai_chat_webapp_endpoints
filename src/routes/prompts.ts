@@ -786,6 +786,9 @@ export async function promptRoutes(app: FastifyInstance) {
         return {
           id: prompt.id,
           title: prompt.title,
+          body: prompt.body,
+          tags: prompt.tags,
+          version: prompt.version,
           usageCount: entry._sum?.count ?? 0,
           feedbackCount: stats?.feedbackCount ?? 0,
           usageTag: resolveUsageTag(stats),
@@ -794,8 +797,7 @@ export async function promptRoutes(app: FastifyInstance) {
           department: prompt.department,
           assignedUsers: prompt.assignedUsers,
           updatedAt: prompt.updatedAt,
-          createdAt: prompt.createdAt,
-          tags: prompt.tags
+          createdAt: prompt.createdAt
         };
       })
       .filter(Boolean);
