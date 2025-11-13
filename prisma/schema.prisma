@@ -6,7 +6,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL") // pooled
-  directUrl = env("DIRECT_URL") // direct
+  //directUrl = env("DIRECT_URL") // direct
 }
 
 enum Provider {
@@ -49,6 +49,13 @@ enum FineTuneModelStatus {
   retired
 }
 
+enum ConversationFileStatus {
+  uploaded
+  processing
+  parsed
+  failed
+}
+
 model Hotel {
   id                      String                    @id @default(cuid())
   name                    String
@@ -67,6 +74,7 @@ model Hotel {
   fineTuneJobs            FineTuneJob[]
   fineTuneModels          FineTuneModel[]
   promptUsages            PromptUsage[]             @relation("PromptUsageHotel")
+  conversationFiles       ConversationFile[]
 }
 
 model HotelProviderToggle {
@@ -101,6 +109,7 @@ model User {
   ToolCallLog        ToolCallLog[]
   PromptFeedback     PromptFeedback[]
   promptUsages       PromptUsage[]        @relation("PromptUsageUsedBy")
+  conversationFiles  ConversationFile[]
 }
 
 model Conversation {
@@ -120,6 +129,7 @@ model Conversation {
   messages        Message[]
   ToolCallLog     ToolCallLog[]
   TrainingExample TrainingExample[]
+  files           ConversationFile[]
 }
 
 model Message {
@@ -199,6 +209,31 @@ model PromptUsage {
   @@index([hotelId, promptId])
   @@index([promptId])
   @@index([hotelId, usedById])
+}
+
+model ConversationFile {
+  id             String                 @id @default(cuid())
+  conversationId String
+  conversation   Conversation           @relation(fields: [conversationId], references: [id])
+  hotelId        String
+  hotel          Hotel                  @relation(fields: [hotelId], references: [id])
+  userId         String
+  user           User                   @relation(fields: [userId], references: [id])
+  originalName   String
+  mimeType       String
+  sizeBytes      Int
+  storagePath    String
+  checksum       String?
+  status         ConversationFileStatus @default(uploaded)
+  extractedText  String?
+  metadata       Json?
+  error          String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  @@index([conversationId])
+  @@index([hotelId])
+  @@index([userId])
 }
 
 model UserPreference {

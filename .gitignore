@@ -24,6 +24,9 @@ src/generated/**
 docker-data/
 *.pid
 
+# Uploaded files
+uploads/
+
 # OS/editor
 .DS_Store
 Thumbs.db

@@ -14,6 +14,7 @@ import { scheduleFineTuneUpload } from "../lib/fineTuning.js";
 import { upsertConversationSummaryExample } from "../lib/training/examples.js";
 import { syncTrainingExamplesToVectorStore } from "../lib/training/vectorStore.js";
 import { ensureDefaultVectorStore } from "../lib/vectorStores.js";
+import { buildAttachmentContext } from "../lib/conversationFiles.js";
 
 const prismaAny = prisma as any;
 
@@ -268,6 +269,25 @@ export async function chatRoutes(app: FastifyInstance) {
       ...persistedHistory.slice(Math.max(persistedHistory.length - MAX_RECENT_CONTEXT_MESSAGES, 0))
     ];
     let messagesForLLM = [...priorMessagesForLLM, ...messages];
+    let attachmentContextForDB: string | undefined;
+    if (existingConv) {
+      const attachments = await prisma.conversationFile.findMany({
+        where: { conversationId: existingConv.id, extractedText: { not: null } },
+        orderBy: { createdAt: "asc" },
+        select: {
+          originalName: true,
+          mimeType: true,
+          extractedText: true
+        }
+      });
+      const attachmentContext = buildAttachmentContext(
+        attachments as Array<{ originalName: string; mimeType: string; extractedText: string | null }>
+      );
+      if (attachmentContext) {
+        messagesForLLM.unshift({ role: "system", content: attachmentContext });
+        attachmentContextForDB = attachmentContext;
+      }
+    }
     let knowledgeContextForDB: string | undefined;
     let knowledgeUsage: { vectorStoreId: string; chunkCount: number } | undefined;
     let knowledgeConfig = knowledge ?? null;
@@ -505,6 +525,7 @@ export async function chatRoutes(app: FastifyInstance) {
     // Store inbound user + (optional) tool messages exactly as they happened
     const inbound = [...messages];
     if (toolTextForDB) inbound.push({ role: "tool", content: toolTextForDB });
+    if (attachmentContextForDB) inbound.push({ role: "system", content: attachmentContextForDB });
     if (knowledgeContextForDB) inbound.push({ role: "system", content: knowledgeContextForDB });
     if (inbound.length) {
       await prisma.message.createMany({
