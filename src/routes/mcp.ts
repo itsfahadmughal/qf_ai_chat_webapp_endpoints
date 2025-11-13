@@ -106,25 +106,59 @@ export async function mcpRoutes(app: FastifyInstance) {
   app.post("/tools/execute", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     const hotelId = await getHotelId(req);
     if (!hotelId) return reply.code(400).send({ error: "User has no hotelId" });
-    const hid = hotelId as string;
     const Body = z.object({
       serverId: z.string(),
       tool: z.string(),
-      arguments: z.record(z.string(), z.unknown()).default({})
+      arguments: z.record(z.string(), z.unknown()).default({}),
+      conversationId: z.string().optional()
     });
-    const { serverId, tool, arguments: argsRaw } = Body.parse(req.body ?? {});
-    const srv = await prisma.mCPServer.findFirst({ where: { id: serverId, hotelId:hid, isActive: true } });
+    const { serverId, tool, arguments: argsRaw, conversationId } = Body.parse(req.body ?? {});
+    const srv = await prisma.mCPServer.findFirst({
+      where: { id: serverId, hotelId, isActive: true }
+    });
     if (!srv) return reply.code(404).send({ error: "MCP server not found for this hotel" });
 
     let args = argsRaw as Record<string, unknown>;
     if (tool.startsWith("brevo.")) {
-      try { args = await injectBrevoKey(hotelId!, args); }
-      catch (e: any) { return reply.code(400).send({ error: "brevo_credential_missing", details: String(e?.message ?? e) }); }
+      try {
+        args = await injectBrevoKey(hotelId, args);
+      } catch (e: any) {
+        return reply
+          .code(400)
+          .send({ error: "brevo_credential_missing", details: String(e?.message ?? e) });
+      }
     }
 
     try {
       const out = await mcpManager.callTool(serverId, tool, args);
-      return out;
+
+      let toolMessageId: string | undefined;
+      if (conversationId) {
+        const conv = await prisma.conversation.findFirst({
+          where: { id: conversationId, hotelId }
+        });
+        if (!conv) {
+          return reply.code(404).send({ error: "conversation_not_found" });
+        }
+        const rendered =
+          typeof (out as any)?.content?.[0]?.text === "string"
+            ? (out as any).content[0].text
+            : JSON.stringify(out, null, 2).slice(0, 4000);
+        const labeled = `TOOL ${tool} RESULT:\n${rendered}`;
+        const message = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "tool",
+            content: labeled,
+            provider: conv.provider,
+            model: conv.model
+          },
+          select: { id: true }
+        });
+        toolMessageId = message.id;
+      }
+
+      return { toolMessageId, result: out };
     } catch (e: any) {
       return reply.code(500).send({ error: "tool_error", details: String(e?.message ?? e) });
     }
