@@ -78,7 +78,7 @@ export async function mcpRoutes(app: FastifyInstance) {
     });
   });
 
-  // OPTIONAL admin list by hotel
+  // OPTIONAL admin list by hotel...
   app.get("/admin/hotels/:hotelId/mcp/servers", { preHandler: (app as any).authenticate }, async (req: any, reply) => {
     // if (req.user.role !== 'admin') return reply.code(403).send({ error: "Forbidden" });
     const { hotelId } = req.params as { hotelId: string };
