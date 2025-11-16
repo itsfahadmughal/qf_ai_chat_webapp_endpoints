@@ -58,11 +58,55 @@ function adaptMessagesForProvider(
   switch (provider) {
     case "openai":
     case "deepseek":
-    case "perplexity":
       return msgs.map(mapToolToSystem);
+    case "perplexity":
+      return normalizePerplexityMessages(msgs);
     default:
       return msgs;
   }
+}
+
+function normalizePerplexityMessages(msgs: Array<{ role: string; content: string }>) {
+  const systemMessages = msgs.filter((m) => m.role === "system");
+  const others = msgs.filter((m) => m.role !== "system");
+
+  const normalized: Array<{ role: string; content: string }> = [];
+  let lastRole: "assistant" | "user" | null = null;
+
+  for (const msg of others) {
+    if (msg.role === "tool") {
+      const content = msg.content || "";
+      if (lastRole === "assistant" && normalized.length) {
+        normalized[normalized.length - 1].content += `\n\n[Tool]\n${content}`;
+      } else {
+        normalized.push({ role: "assistant", content: `Tool output:\n${content}` });
+        lastRole = "assistant";
+      }
+      continue;
+    }
+    if (msg.role === "assistant") {
+      if (lastRole === "assistant" && normalized.length) {
+        normalized[normalized.length - 1].content += `\n\n${msg.content}`;
+        continue;
+      }
+      normalized.push(msg);
+      lastRole = "assistant";
+      continue;
+    }
+    if (msg.role === "user") {
+      if (lastRole === "user" && normalized.length) {
+        normalized[normalized.length - 1].content += `\n\n${msg.content}`;
+        continue;
+      }
+      normalized.push(msg);
+      lastRole = "user";
+      continue;
+    }
+    normalized.push({ role: "user", content: msg.content });
+    lastRole = "user";
+  }
+
+  return [...systemMessages, ...normalized];
 }
 
 function normalizeSummaryText(text: string) {
@@ -262,13 +306,9 @@ export async function chatRoutes(app: FastifyInstance) {
     // 7.5) Optional MCP tool execution (pre-LLM)
     // We'll add the tool result to the *chat context*, but send it to the provider as a "system" message (not "tool")
     const summaryForLLM = memoryMessage?.content?.trim();
-    const priorMessagesForLLM = [
-      ...(summaryForLLM
-        ? [{ role: "system", content: summaryForLLM }]
-        : []),
-      ...persistedHistory.slice(Math.max(persistedHistory.length - MAX_RECENT_CONTEXT_MESSAGES, 0))
-    ];
-    let messagesForLLM = [...priorMessagesForLLM, ...messages];
+    const systemContexts: string[] = [];
+    if (summaryForLLM) systemContexts.push(summaryForLLM);
+    let messagesForLLM: Array<{ role: string; content: string }> = [];
     let attachmentContextForDB: string | undefined;
     if (existingConv) {
       const attachments = await prisma.conversationFile.findMany({
@@ -284,7 +324,7 @@ export async function chatRoutes(app: FastifyInstance) {
         attachments as Array<{ originalName: string; mimeType: string; extractedText: string | null }>
       );
       if (attachmentContext) {
-        messagesForLLM.unshift({ role: "system", content: attachmentContext });
+        systemContexts.push(attachmentContext);
         attachmentContextForDB = attachmentContext;
       }
     }
@@ -392,7 +432,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
             if (chunks.length) {
               const contextMessage = `Use the retrieved knowledge when relevant.\n\n${chunks.join("\n\n")}`;
-              messagesForLLM.unshift({ role: "system", content: contextMessage });
+              systemContexts.push(contextMessage);
               knowledgeContextForDB = contextMessage;
               knowledgeUsage = { vectorStoreId: storeRecord.id, chunkCount: chunks.length };
             }
@@ -404,6 +444,14 @@ export async function chatRoutes(app: FastifyInstance) {
           }
         }
       }
+    }
+    const historyWindow = persistedHistory.slice(
+      Math.max(persistedHistory.length - MAX_RECENT_CONTEXT_MESSAGES, 0)
+    );
+    messagesForLLM = [...historyWindow, ...messages];
+    if (systemContexts.length) {
+      const systemMessages = systemContexts.map(content => ({ role: "system", content }));
+      messagesForLLM = [...systemMessages, ...messagesForLLM];
     }
     let toolTextForDB: string | undefined; // stored in DB as role "tool"
     let toolContextForModel: string | undefined; // what the model actually sees
