@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { MultipartFile } from "@fastify/multipart";
 import { z } from "zod";
 import path from "node:path";
+import fs from "node:fs";
 import { prisma } from "../db.js";
 import {
   ALLOWED_FILE_EXTENSIONS,
@@ -20,6 +21,7 @@ type UploadResult = {
   sizeBytes: number;
   status: string;
   warnings: string[];
+  downloadUrl: string;
 };
 
 function warnUnsupported(filename: string, mimeType: string | undefined) {
@@ -35,7 +37,7 @@ export async function conversationFileRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     const conversation = await prisma.conversation.findFirst({
       where: { id, userId: req.user.id },
-      select: { id: true, hotelId: true }
+      select: { id: true, hotelId: true, provider: true, model: true }
     });
     if (!conversation) {
       return reply.code(404).send({ error: "conversation_not_found" });
@@ -109,13 +111,15 @@ export async function conversationFileRoutes(app: FastifyInstance) {
           });
         }
 
+        const downloadUrl = `/conversations/${conversation.id}/files/${record.id}/download`;
         results.push({
           id: record.id,
           originalName,
           mimeType,
           sizeBytes: persisted.sizeBytes,
           status: extractedText ? "parsed" : "uploaded",
-          warnings
+          warnings,
+          downloadUrl
         });
       } catch (err: any) {
         return reply.code(500).send({ error: "file_upload_failed", details: String(err?.message ?? err) });
@@ -124,6 +128,23 @@ export async function conversationFileRoutes(app: FastifyInstance) {
 
     if (!sawFile) {
       return reply.code(400).send({ error: "no_files", details: "Attach at least one file." });
+    }
+
+    if (results.length) {
+      const lines = results.map(
+        (f) =>
+          `- ${f.originalName} (${f.mimeType}, ${Math.round(f.sizeBytes / 1024)} KB) -> ${f.downloadUrl}`
+      );
+      const content = `Uploaded files:\n${lines.join("\n")}`;
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "user",
+          content,
+          provider: conversation.provider,
+          model: conversation.model
+        }
+      });
     }
 
     return { files: results };
@@ -153,6 +174,50 @@ export async function conversationFileRoutes(app: FastifyInstance) {
       }
     });
 
-    return { files };
+    return {
+      files: files.map((file) => ({
+        ...file,
+        downloadUrl: `/conversations/${id}/files/${file.id}/download`
+      }))
+    };
   });
+
+  app.get(
+    "/conversations/:conversationId/files/:fileId/download",
+    { preHandler: app.authenticate },
+    async (req: any, reply) => {
+      const { conversationId, fileId } = req.params as { conversationId: string; fileId: string };
+      const conversation = await prisma.conversation.findFirst({
+        where: { id: conversationId, userId: req.user.id },
+        select: { id: true, hotelId: true }
+      });
+      if (!conversation) {
+        return reply.code(404).send({ error: "conversation_not_found" });
+      }
+
+      const file = await prisma.conversationFile.findFirst({
+        where: { id: fileId, conversationId },
+        select: {
+          originalName: true,
+          mimeType: true,
+          storagePath: true
+        }
+      });
+      if (!file) {
+        return reply.code(404).send({ error: "file_not_found" });
+      }
+
+      const absolutePath = path.resolve(process.cwd(), file.storagePath);
+      if (!fs.existsSync(absolutePath)) {
+        return reply.code(404).send({ error: "file_missing" });
+      }
+
+      reply.header("Content-Type", file.mimeType);
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="${file.originalName.replace(/"/g, "")}"`
+      );
+      return reply.send(fs.createReadStream(absolutePath));
+    }
+  );
 }
