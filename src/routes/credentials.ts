@@ -20,6 +20,9 @@ export async function credentialRoutes(app: FastifyInstance) {
     if (!hotel) return reply.code(404).send({ error: "Hotel not found" });
 
     const { encKey, iv, tag } = encryptSecret(body.apiKey);
+    const encKeyUint = new Uint8Array(encKey);
+    const ivUint = new Uint8Array(iv);
+    const tagUint = new Uint8Array(tag);
     const last4 = body.apiKey.slice(-4);
 
     const saved = await prisma.hotelProviderCredential.upsert({
@@ -27,18 +30,18 @@ export async function credentialRoutes(app: FastifyInstance) {
       create: {
         hotelId: id,
         provider: provider as any,
-        encKey,
-        iv,
-        tag,
+        encKey: encKeyUint,
+        iv: ivUint,
+        tag: tagUint,
         baseUrl: body.baseUrl,
         label: body.label,
         last4,
         isActive: true
       },
       update: {
-        encKey,
-        iv,
-        tag,
+        encKey: encKeyUint,
+        iv: ivUint,
+        tag: tagUint,
         baseUrl: body.baseUrl,
         label: body.label,
         last4,
