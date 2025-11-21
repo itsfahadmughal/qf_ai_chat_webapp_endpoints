@@ -26,6 +26,9 @@ importers:
       '@prisma/client':
         specifier: ^7.0.0
         version: 7.0.0(prisma@7.0.0(@types/react@19.2.6)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(typescript@5.9.2))(typescript@5.9.2)
+      '@prisma/config':
+        specifier: ^7.0.0
+        version: 7.0.0
       '@xmldom/xmldom':
         specifier: ^0.8.11
         version: 0.8.11
@@ -72,9 +75,6 @@ importers:
         specifier: 3.23.8
         version: 3.23.8
     devDependencies:
-      '@prisma/config':
-        specifier: ^7.0.0
-        version: 7.0.0
       '@types/node':
         specifier: ^24.3.0
         version: 24.3.0

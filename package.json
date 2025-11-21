@@ -24,6 +24,7 @@
     "@modelcontextprotocol/sdk": "^1.18.1",
     "@prisma/adapter-pg": "^7.0.0",
     "@prisma/client": "^7.0.0",
+    "@prisma/config": "^7.0.0",
     "@xmldom/xmldom": "^0.8.11",
     "adm-zip": "^0.5.12",
     "bcryptjs": "^3.0.2",
@@ -41,7 +42,6 @@
     "zod": "3.23.8"
   },
   "devDependencies": {
-    "@prisma/config": "^7.0.0",
     "@types/node": "^24.3.0",
     "@types/nodemailer": "^7.0.1",
     "@types/pg": "^8.15.6",
