@@ -5,8 +5,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL") // pooled
-  directUrl = env("DIRECT_URL") // direct
 }
 
 enum Provider {
