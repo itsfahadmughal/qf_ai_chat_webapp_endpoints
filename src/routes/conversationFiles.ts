@@ -3,6 +3,7 @@ import type { MultipartFile } from "@fastify/multipart";
 import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { prisma } from "../db.js";
 import {
   ALLOWED_FILE_EXTENSIONS,
@@ -13,6 +14,8 @@ import {
 } from "../lib/conversationFiles.js";
 
 const MAX_FILES_PER_REQUEST = 10;
+const DOWNLOAD_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const DOWNLOAD_SECRET = process.env.JWT_SECRET || "dev_only";
 
 type UploadResult = {
   id: string;
@@ -23,6 +26,34 @@ type UploadResult = {
   warnings: string[];
   downloadUrl: string;
 };
+
+function createDownloadToken(fileId: string, userId: string) {
+  const timestamp = Date.now();
+  const payload = `${fileId}:${userId}:${timestamp}`;
+  const signature = crypto.createHmac("sha256", DOWNLOAD_SECRET).update(payload).digest("hex");
+  const token = `${payload}:${signature}`;
+  return Buffer.from(token).toString("base64url");
+}
+
+function verifyDownloadToken(token: string | undefined) {
+  if (!token) return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(token, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+  const parts = decoded.split(":");
+  if (parts.length !== 4) return null;
+  const [fileId, userId, timestampStr, signature] = parts;
+  const timestamp = Number(timestampStr);
+  if (!fileId || !userId || !timestamp || !signature) return null;
+  const payload = `${fileId}:${userId}:${timestamp}`;
+  const expectedSignature = crypto.createHmac("sha256", DOWNLOAD_SECRET).update(payload).digest("hex");
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) return null;
+  if (Date.now() - timestamp > DOWNLOAD_TOKEN_TTL_MS) return null;
+  return { fileId, userId };
+}
 
 function warnUnsupported(filename: string, mimeType: string | undefined) {
   const ext = path.extname(filename).toLowerCase();
@@ -111,7 +142,10 @@ export async function conversationFileRoutes(app: FastifyInstance) {
           });
         }
 
-        const downloadUrl = `/conversations/${conversation.id}/files/${record.id}/download`;
+        const token = createDownloadToken(record.id, req.user.id);
+        const downloadUrl = `/conversations/${conversation.id}/files/${record.id}/download?token=${encodeURIComponent(
+          token
+        )}`;
         results.push({
           id: record.id,
           originalName,
@@ -170,54 +204,59 @@ export async function conversationFileRoutes(app: FastifyInstance) {
         sizeBytes: true,
         status: true,
         createdAt: true,
-        metadata: true
+        metadata: true,
+        userId: true
       }
     });
 
     return {
-      files: files.map((file) => ({
-        ...file,
-        downloadUrl: `/conversations/${id}/files/${file.id}/download`
-      }))
+      files: files.map((file) => {
+        const token = createDownloadToken(file.id, req.user.id);
+        return {
+          id: file.id,
+          originalName: file.originalName,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          status: file.status,
+          createdAt: file.createdAt,
+          metadata: file.metadata,
+          downloadUrl: `/conversations/${id}/files/${file.id}/download?token=${encodeURIComponent(token)}`
+        };
+      })
     };
   });
 
-  app.get(
-    "/conversations/:conversationId/files/:fileId/download",
-    { preHandler: app.authenticate },
-    async (req: any, reply) => {
-      const { conversationId, fileId } = req.params as { conversationId: string; fileId: string };
-      const conversation = await prisma.conversation.findFirst({
-        where: { id: conversationId, userId: req.user.id },
-        select: { id: true, hotelId: true }
-      });
-      if (!conversation) {
-        return reply.code(404).send({ error: "conversation_not_found" });
-      }
-
-      const file = await prisma.conversationFile.findFirst({
-        where: { id: fileId, conversationId },
-        select: {
-          originalName: true,
-          mimeType: true,
-          storagePath: true
-        }
-      });
-      if (!file) {
-        return reply.code(404).send({ error: "file_not_found" });
-      }
-
-      const absolutePath = path.resolve(process.cwd(), file.storagePath);
-      if (!fs.existsSync(absolutePath)) {
-        return reply.code(404).send({ error: "file_missing" });
-      }
-
-      reply.header("Content-Type", file.mimeType);
-      reply.header(
-        "Content-Disposition",
-        `attachment; filename="${file.originalName.replace(/"/g, "")}"`
-      );
-      return reply.send(fs.createReadStream(absolutePath));
+  app.get("/conversations/:conversationId/files/:fileId/download", async (req: any, reply) => {
+    const { conversationId, fileId } = req.params as { conversationId: string; fileId: string };
+    const token = (req.query as any)?.token as string | undefined;
+    const verified = verifyDownloadToken(token);
+    if (!verified || verified.fileId !== fileId) {
+      return reply.code(401).send({ error: "invalid_token" });
     }
-  );
+
+    const file = await prisma.conversationFile.findFirst({
+      where: { id: fileId, conversationId },
+      select: {
+        originalName: true,
+        mimeType: true,
+        storagePath: true,
+        userId: true
+      }
+    });
+    if (!file) {
+      return reply.code(404).send({ error: "file_not_found" });
+    }
+    if (file.userId !== verified.userId) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+
+    const absolutePath = path.resolve(process.cwd(), file.storagePath);
+    if (!fs.existsSync(absolutePath)) {
+      return reply.code(404).send({ error: "file_missing" });
+    }
+
+    reply.header("Content-Type", file.mimeType);
+    reply.header("Content-Disposition", `attachment; filename="${file.originalName.replace(/"/g, "")}"`);
+    return reply.send(fs.createReadStream(absolutePath));
+  });
 }
