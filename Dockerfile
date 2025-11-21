@@ -16,6 +16,7 @@ FROM deps AS build
 # Prisma needs openssl for generate on bookworm (openssl 3.0)
 RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
 COPY tsconfig.json ./tsconfig.json
 COPY tsconfig.build.json ./tsconfig.build.json
 COPY src ./src
@@ -31,6 +32,7 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends ca-certifica
 RUN useradd -m -u 10001 appuser
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/prisma.config.ts ./prisma.config.ts
 COPY --from=build /app/node_modules_prod ./node_modules
 RUN chown -R appuser:appuser /app
 USER appuser
