@@ -255,8 +255,10 @@ export async function conversationFileRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "file_missing" });
     }
 
+    const safeName = file.originalName.replace(/"/g, "");
     reply.header("Content-Type", file.mimeType);
-    reply.header("Content-Disposition", `attachment; filename="${file.originalName.replace(/"/g, "")}"`);
+    const isInline = file.mimeType.startsWith("image/");
+    reply.header("Content-Disposition", `${isInline ? "inline" : "attachment"}; filename="${safeName}"`);
     return reply.send(fs.createReadStream(absolutePath));
   });
 }
