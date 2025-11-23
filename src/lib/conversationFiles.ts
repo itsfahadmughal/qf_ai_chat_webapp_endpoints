@@ -165,7 +165,8 @@ async function extractFromZip(filePath: string) {
 
 async function extractFromImage(filePath: string, originalName: string) {
   try {
-    const result = await Tesseract.recognize(filePath, "eng");
+    const lang = process.env.TESSERACT_LANGUAGES || "eng+deu+spa+ita";
+    const result = await Tesseract.recognize(filePath, lang);
     const text = result?.data?.text?.trim();
     if (text) return text;
   } catch (err) {
