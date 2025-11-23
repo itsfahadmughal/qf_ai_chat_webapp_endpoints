@@ -8,6 +8,7 @@ import mammoth from "mammoth";
 import { htmlToText } from "html-to-text";
 import xlsx from "xlsx";
 import AdmZip from "adm-zip";
+import Tesseract from "tesseract.js";
 
 const PROJECT_ROOT = process.cwd();
 const CONVERSATION_UPLOAD_ROOT = path.resolve(PROJECT_ROOT, "uploads", "conversations");
@@ -162,6 +163,17 @@ async function extractFromZip(filePath: string) {
   return parts.length ? parts.join("\n\n") : null;
 }
 
+async function extractFromImage(filePath: string, originalName: string) {
+  try {
+    const result = await Tesseract.recognize(filePath, "eng");
+    const text = result?.data?.text?.trim();
+    if (text) return text;
+  } catch (err) {
+    console.warn(`OCR failed for ${originalName}:`, err);
+  }
+  return null;
+}
+
 export async function extractTextFromFile(filePath: string, mimeType: string | null, originalName: string) {
   const ext = path.extname(originalName || "").toLowerCase();
   const normalizedMime = mimeType?.toLowerCase() ?? "";
@@ -204,9 +216,20 @@ export async function extractTextFromFile(filePath: string, mimeType: string | n
     } else if (normalizedMime === "application/zip" || ext === ".zip") {
       text = await extractFromZip(filePath);
       if (!text) warnings.push("No text-based files found inside the archive.");
-    } else if (normalizedMime === "image/png" || normalizedMime === "image/jpeg" || ext === ".png" || ext === ".jpg" || ext === ".jpeg") {
-      warnings.push("Image OCR is not enabled; please describe the image content when chatting.");
-      text = `Image attachment "${originalName}" (${normalizedMime || ext || "image"}). OCR is not enabled, so describe the image in your prompt if needed.`;
+    } else if (
+      normalizedMime === "image/png" ||
+      normalizedMime === "image/jpeg" ||
+      normalizedMime === "image/webp" ||
+      ext === ".png" ||
+      ext === ".jpg" ||
+      ext === ".jpeg" ||
+      ext === ".webp"
+    ) {
+      text = await extractFromImage(filePath, originalName);
+      if (!text) {
+        warnings.push("Unable to extract text from image automatically.");
+        text = `Image attachment "${originalName}" (${normalizedMime || ext || "image"}). OCR failed; please describe the image if needed.`;
+      }
     } else {
       warnings.push("File type not recognized for automatic text extraction.");
     }
