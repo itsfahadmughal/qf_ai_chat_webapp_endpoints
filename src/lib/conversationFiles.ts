@@ -34,7 +34,8 @@ export const ALLOWED_FILE_EXTENSIONS = new Set([
   ".zip",
   ".png",
   ".jpg",
-  ".jpeg"
+  ".jpeg",
+  ".webp"
 ]);
 
 export const ALLOWED_MIME_TYPES = new Set([
@@ -52,7 +53,8 @@ export const ALLOWED_MIME_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/zip",
   "image/png",
-  "image/jpeg"
+  "image/jpeg",
+  "image/webp"
 ]);
 
 const ARCHIVE_TEXT_EXTENSIONS = new Set([
