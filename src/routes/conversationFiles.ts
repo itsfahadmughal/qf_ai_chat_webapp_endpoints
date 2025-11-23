@@ -14,7 +14,7 @@ import {
 } from "../lib/conversationFiles.js";
 
 const MAX_FILES_PER_REQUEST = 10;
-const DOWNLOAD_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const DOWNLOAD_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 const DOWNLOAD_SECRET = process.env.JWT_SECRET || "dev_only";
 
 type UploadResult = {
