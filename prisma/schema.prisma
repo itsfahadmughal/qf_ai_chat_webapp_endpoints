@@ -224,6 +224,8 @@ model ConversationFile {
   checksum       String?
   status         ConversationFileStatus @default(uploaded)
   extractedText  String?
+  visionSummary  String?
+  visionModel    String?
   metadata       Json?
   error          String?
   createdAt      DateTime               @default(now())

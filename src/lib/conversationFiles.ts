@@ -15,6 +15,8 @@ const CONVERSATION_UPLOAD_ROOT = path.resolve(PROJECT_ROOT, "uploads", "conversa
 const DEFAULT_TEXT_LIMIT = 20000;
 const DEFAULT_PER_FILE_CONTEXT_LIMIT = 2000;
 const DEFAULT_TOTAL_CONTEXT_LIMIT = 8000;
+const TESSDATA_DIR = process.env.TESSDATA_DIR || path.resolve(PROJECT_ROOT, "tessdata");
+const OCR_LANGUAGES = process.env.TESSERACT_LANGUAGES || "eng+deu+spa+ita";
 
 export const ALLOWED_FILE_EXTENSIONS = new Set([
   ".pdf",
@@ -167,8 +169,9 @@ async function extractFromZip(filePath: string) {
 
 async function extractFromImage(filePath: string, originalName: string) {
   try {
-    const lang = process.env.TESSERACT_LANGUAGES || "eng+deu+spa+ita";
-    const result = await Tesseract.recognize(filePath, lang);
+    const result = await Tesseract.recognize(filePath, OCR_LANGUAGES, {
+      langPath: TESSDATA_DIR
+    });
     const text = result?.data?.text?.trim();
     if (text) return text;
   } catch (err) {

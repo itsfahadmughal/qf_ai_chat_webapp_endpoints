@@ -10,12 +10,68 @@ import {
   ALLOWED_MIME_TYPES,
   extractTextFromFile,
   isAllowedFile,
-  persistMultipartFile
+  persistMultipartFile,
+  buildAttachmentContext
 } from "../lib/conversationFiles.js";
+import { getHotelOpenAIClient } from "../lib/openai.js";
 
 const MAX_FILES_PER_REQUEST = 10;
 const DOWNLOAD_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 const DOWNLOAD_SECRET = process.env.JWT_SECRET || "dev_only";
+const VISION_PROMPT =
+  process.env.OPENAI_VISION_PROMPT ||
+  "Describe the key elements of this hospitality-related image so I can answer guest questions accurately.";
+const DEFAULT_VISION_MODEL =
+  process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+async function analyzeImageWithVision({
+  filePath,
+  mimeType,
+  hotelId,
+  log
+}: {
+  filePath: string;
+  mimeType: string;
+  hotelId: string;
+  log: any;
+}) {
+  if (!mimeType.startsWith("image/")) return null;
+  try {
+    const client = await getHotelOpenAIClient(hotelId);
+    const data = await fs.promises.readFile(filePath);
+    const base64 = data.toString("base64");
+    const response = await client.responses.create({
+      model: DEFAULT_VISION_MODEL,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: VISION_PROMPT },
+            { type: "input_image", image_url: `data:${mimeType};base64,${base64}`, detail: "auto" }
+          ]
+        }
+      ]
+    });
+    const summary =
+      (Array.isArray(response.output_text) && response.output_text.join("\n").trim()) ||
+      response.output
+        ?.map((block: any) =>
+          Array.isArray(block.content)
+            ? block.content
+                .map((part: any) => part?.text ?? part?.content ?? "")
+                .join(" ")
+            : ""
+        )
+        .join("\n")
+        .trim();
+    if (summary) {
+      return { summary, model: DEFAULT_VISION_MODEL };
+    }
+  } catch (err) {
+    log?.warn?.({ err }, "vision_analysis_failed");
+  }
+  return null;
+}
 
 type UploadResult = {
   id: string;
@@ -25,6 +81,7 @@ type UploadResult = {
   status: string;
   warnings: string[];
   downloadUrl: string;
+  visionSummary?: string | null;
 };
 
 function createDownloadToken(fileId: string, userId: string) {
@@ -119,16 +176,32 @@ export async function conversationFileRoutes(app: FastifyInstance) {
 
         let warnings: string[] = [];
         let extractedText: string | null = null;
+        let visionSummary: string | null = null;
+        let visionModel: string | null = null;
         try {
           const extraction = await extractTextFromFile(persisted.path, mimeType, originalName);
           extractedText = extraction.text;
           warnings = extraction.warnings;
+          if (mimeType.startsWith("image/")) {
+            const vision = await analyzeImageWithVision({
+              filePath: persisted.path,
+              mimeType,
+              hotelId: conversation.hotelId,
+              log: req.log
+            });
+            if (vision?.summary) {
+              visionSummary = vision.summary;
+              visionModel = vision.model;
+            }
+          }
           await prisma.conversationFile.update({
             where: { id: record.id },
             data: {
               extractedText,
               metadata: warnings.length ? { warnings } : undefined,
-              status: extractedText ? "parsed" : "uploaded"
+              status: extractedText ? "parsed" : "uploaded",
+              visionSummary,
+              visionModel
             }
           });
         } catch (err: any) {
@@ -153,7 +226,8 @@ export async function conversationFileRoutes(app: FastifyInstance) {
           sizeBytes: persisted.sizeBytes,
           status: extractedText ? "parsed" : "uploaded",
           warnings,
-          downloadUrl
+          downloadUrl,
+          visionSummary
         });
       } catch (err: any) {
         return reply.code(500).send({ error: "file_upload_failed", details: String(err?.message ?? err) });
@@ -179,6 +253,43 @@ export async function conversationFileRoutes(app: FastifyInstance) {
           model: conversation.model
         }
       });
+
+      const uploadedFiles = await prisma.conversationFile.findMany({
+        where: { id: { in: results.map((r) => r.id) } },
+        select: {
+          originalName: true,
+          mimeType: true,
+          extractedText: true,
+          visionSummary: true
+        }
+      });
+      const attachmentContext = buildAttachmentContext(
+        uploadedFiles
+          .map((file) => {
+            const combined = [file.extractedText, file.visionSummary ? `Vision summary:\n${file.visionSummary}` : null]
+              .filter(Boolean)
+              .join("\n\n");
+            if (!combined) return null;
+            return {
+              originalName: file.originalName,
+              mimeType: file.mimeType,
+              extractedText: combined
+            };
+          })
+          .filter(
+            (entry): entry is { originalName: string; mimeType: string; extractedText: string } =>
+              Boolean(entry?.extractedText)
+          )
+      );
+      if (attachmentContext) {
+        await prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            role: "system",
+            content: attachmentContext
+          }
+        });
+      }
     }
 
     return { files: results };
