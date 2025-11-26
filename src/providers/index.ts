@@ -1,4 +1,5 @@
 import { makeOpenAICompatibleProvider } from "./openaiCompatible.js";
+import { makeClaudeProvider } from "./claude.js";
 
 export const Providers = {
   openai: makeOpenAICompatibleProvider(
@@ -15,5 +16,10 @@ export const Providers = {
     "perplexity",
     process.env.PERPLEXITY_API_KEY || "",
     process.env.PERPLEXITY_BASE_URL || "https://api.perplexity.ai"
+  ),
+  claude: makeClaudeProvider(
+    "claude",
+    process.env.CLAUDE_API_KEY || "",
+    process.env.CLAUDE_BASE_URL || "https://api.anthropic.com/v1"
   )
 } as const;

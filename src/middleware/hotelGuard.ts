@@ -4,7 +4,7 @@ import { prisma } from "../db.js";
 export async function assertHotelAndProvider(
   req: FastifyRequest & { user?: { id: string } },
   reply: FastifyReply,
-  provider?: "openai"|"deepseek"|"perplexity"
+  provider?: "openai"|"deepseek"|"perplexity"|"claude"
 ) {
   // Load user + hotel once
   const user = await prisma.user.findUnique({

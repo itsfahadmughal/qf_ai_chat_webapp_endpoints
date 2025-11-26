@@ -18,7 +18,7 @@ import { buildAttachmentContext } from "../lib/conversationFiles.js";
 
 const prismaAny = prisma as any;
 
-type ProviderName = "openai" | "deepseek" | "perplexity";
+type ProviderName = "openai" | "deepseek" | "perplexity" | "claude";
 
 const MEMORY_MESSAGE_ROLE = "memory";
 const MAX_RECENT_CONTEXT_MESSAGES = 8;
@@ -221,7 +221,7 @@ export async function chatRoutes(app: FastifyInstance) {
     } else if (prefs?.defaultProvider && canUse(prefs.defaultProvider as ProviderName)) {
       chosenProvider = prefs.defaultProvider as ProviderName;
     } else {
-      chosenProvider = (["openai", "deepseek", "perplexity"] as const).find(canUse);
+      chosenProvider = (["openai", "deepseek", "perplexity", "claude"] as const).find(canUse);
     }
     if (!chosenProvider) return reply.code(403).send({ error: "No provider available (hotel or user disabled all)" });
 

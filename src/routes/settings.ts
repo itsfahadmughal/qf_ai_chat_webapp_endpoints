@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { prisma } from "../db.js";
 import { z } from "zod";
 
-const ProviderEnum = z.enum(["openai", "deepseek", "perplexity"]);
+const ProviderEnum = z.enum(["openai", "deepseek", "perplexity", "claude"]);
 
 const UpdateSchema = z.object({
   enabledProviders: z.array(ProviderEnum).optional(),   // e.g. ["openai","deepseek"]

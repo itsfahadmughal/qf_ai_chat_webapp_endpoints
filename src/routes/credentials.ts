@@ -3,7 +3,7 @@ import { prisma } from "../db.js";
 import { z } from "zod";
 import { encryptSecret } from "../crypto/secrets.js";
 
-const ProviderEnum = z.enum(["openai","deepseek","perplexity"]);
+const ProviderEnum = z.enum(["openai","deepseek","perplexity","claude"]);
 
 export async function credentialRoutes(app: FastifyInstance) {
   // PUT set/rotate key for a hotel+provider

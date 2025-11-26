@@ -1,7 +1,7 @@
 export type ChatMessage = { role: "system"|"user"|"assistant"|"tool"; content: string };
 
 export interface LLMProvider {
-  name: "openai" | "deepseek" | "perplexity";
+  name: "openai" | "deepseek" | "perplexity" | "claude";
   chat(opts: {
     model: string;
     messages: ChatMessage[];
