@@ -194,11 +194,55 @@ async function loadVectorStoreForHotel(id: string, hotelId: string) {
   });
 }
 
+async function getCurrentUser(req: any, reply: any) {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    select: { id: true, hotelId: true, role: true, departmentId: true }
+  });
+  if (!user) {
+    reply.code(401).send({ error: "User not found" });
+    return null;
+  }
+  return user;
+}
+
+function userCanAccessDepartment(user: { role: string; departmentId: string | null }, departmentId: string | null) {
+  if (user.role === "author") return true;
+  if (!departmentId) return true;
+  return user.departmentId === departmentId;
+}
+
+async function loadVectorStoreForAccess(id: string, user: any, reply: any) {
+  const record = await prismaAny.hotelVectorStore.findFirst({
+    where: { id, hotelId: user.hotelId },
+    include: { department: { select: { id: true, name: true } } }
+  });
+  if (!record) {
+    reply.code(404).send({ error: "vector_store_not_found" });
+    return null;
+  }
+  if (!userCanAccessDepartment(user, record.departmentId ?? null)) {
+    reply.code(403).send({ error: "vector_store_forbidden" });
+    return null;
+  }
+  return record;
+}
+
 export async function ragRoutes(app: FastifyInstance) {
-  app.post("/rag/vector-stores", async (req: any, reply) => {
+  app.post("/rag/vector-stores", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const body = CreateVectorStoreSchema.parse(req.body ?? {});
       const { hotelId, departmentId } = body;
+
+      if (hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+
+      if (!userCanAccessDepartment(user, departmentId)) {
+        return reply.code(403).send({ error: "department_forbidden" });
+      }
 
       const department = await ensureDepartmentForHotel(hotelId, departmentId, reply);
       if (!department) return;
@@ -277,21 +321,47 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/rag/vector-stores", async (req: any, reply) => {
+  app.get("/rag/vector-stores", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const query = ListVectorStoresQuery.parse(req.query ?? {});
       const { hotelId, departmentId } = query;
 
-      if (departmentId) {
-        const department = await ensureDepartmentForHotel(hotelId, departmentId, reply);
+      if (hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+
+      let effectiveDepartmentId = departmentId;
+      if (user.role !== "author") {
+        if (departmentId && !userCanAccessDepartment(user, departmentId)) {
+          return reply.code(403).send({ error: "department_forbidden" });
+        }
+        if (!departmentId) {
+          effectiveDepartmentId = undefined;
+        }
+      }
+
+      if (effectiveDepartmentId) {
+        const department = await ensureDepartmentForHotel(hotelId, effectiveDepartmentId, reply);
         if (!department) return;
       }
 
+      const where: any = { hotelId };
+      if (user.role === "author") {
+        if (effectiveDepartmentId) where.departmentId = effectiveDepartmentId;
+      } else if (departmentId) {
+        where.departmentId = departmentId;
+      } else {
+        if (user.departmentId) {
+          where.OR = [{ departmentId: user.departmentId }, { departmentId: null }];
+        } else {
+          where.departmentId = null;
+        }
+      }
+
       const stores = await prismaAny.hotelVectorStore.findMany({
-        where: {
-          hotelId,
-          ...(departmentId ? { departmentId } : {})
-        },
+        where,
         orderBy: { createdAt: "desc" },
         take: query.limit ?? undefined,
         include: { department: { select: { id: true, name: true } } }
@@ -333,15 +403,16 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/rag/vector-stores/:id", async (req: any, reply) => {
+  app.get("/rag/vector-stores/:id", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { id } = req.params as { id: string };
-      const { hotelId } = HotelScopedBody.parse(req.query ?? {});
 
-      const record = await loadVectorStoreForHotel(id, hotelId);
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      const record = await loadVectorStoreForAccess(id, user, reply);
+      if (!record) return;
 
-      const cfg = await resolveHotelOpenAIConfig(hotelId);
+      const cfg = await resolveHotelOpenAIConfig(user.hotelId);
       if (!cfg.apiKey) {
         return {
           record: formatVectorStoreRecord(record, null, false),
@@ -350,7 +421,7 @@ export async function ragRoutes(app: FastifyInstance) {
       }
 
       try {
-        const client = await getHotelOpenAIClient(hotelId);
+        const client = await getHotelOpenAIClient(user.hotelId);
         const vectorStores = getVectorStoresApi(client);
         const remote = await vectorStores.retrieve(record.openaiId);
         return {
@@ -370,16 +441,21 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/rag/vector-stores/:id/files", async (req: any, reply) => {
+  app.get("/rag/vector-stores/:id/files", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { id } = req.params as { id: string };
       const query = ListVectorStoreFilesQuery.parse(req.query ?? {});
-      const { hotelId } = query;
 
-      const record = await loadVectorStoreForHotel(id, hotelId);
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      if (query.hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
 
-      const client = await getHotelOpenAIClientOrError(hotelId, reply);
+      const record = await loadVectorStoreForAccess(id, user, reply);
+      if (!record) return;
+
+      const client = await getHotelOpenAIClientOrError(user.hotelId, reply);
       if (!client) return;
       const vectorStores = getVectorStoresApi(client);
 
@@ -402,8 +478,10 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/rag/vector-stores/:id/files", async (req: any, reply) => {
+  app.post("/rag/vector-stores/:id/files", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { id } = req.params as { id: string };
 
       let collected;
@@ -423,8 +501,12 @@ export async function ragRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "hotel_id_required" });
       }
 
-      const record = await loadVectorStoreForHotel(id, hotelId);
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      if (hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+
+      const record = await loadVectorStoreForAccess(id, user, reply);
+      if (!record) return;
 
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
       if (!client) return;
@@ -485,13 +567,19 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/rag/vector-stores/:id/files/:fileId", async (req: any, reply) => {
+  app.patch("/rag/vector-stores/:id/files/:fileId", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { id, fileId } = req.params as { id: string; fileId: string };
       const body = UpdateVectorStoreFileBody.parse(req.body ?? {});
 
-      const record = await loadVectorStoreForHotel(id, body.hotelId);
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      if (body.hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+
+      const record = await loadVectorStoreForAccess(id, user, reply);
+      if (!record) return;
 
       const client = await getHotelOpenAIClientOrError(body.hotelId, reply);
       if (!client) return;
@@ -579,13 +667,19 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch("/rag/vector-stores/:id/default", async (req: any, reply) => {
+  app.patch("/rag/vector-stores/:id/default", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { id } = req.params as { id: string };
       const { hotelId } = HotelScopedBody.parse(req.body ?? {});
 
-      const record = await loadVectorStoreForHotel(id, hotelId);
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      if (hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+
+      const record = await loadVectorStoreForAccess(id, user, reply);
+      if (!record) return;
 
       await setDefaultVectorStore(hotelId, record.id);
       return { ok: true };
@@ -599,13 +693,19 @@ export async function ragRoutes(app: FastifyInstance) {
   });
   
 
-  app.delete("/rag/vector-stores/:id", async (req: any, reply) => {
+  app.delete("/rag/vector-stores/:id", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { id } = req.params as { id: string };
       const { hotelId } = HotelScopedBody.parse(req.query ?? {});
 
-      const record = await loadVectorStoreForHotel(id, hotelId);
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      if (hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+
+      const record = await loadVectorStoreForAccess(id, user, reply);
+      if (!record) return;
 
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
       if (!client) return;
@@ -645,9 +745,18 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete("/rag/vector-stores", async (req: any, reply) => {
+  app.delete("/rag/vector-stores", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { hotelId } = HotelScopedBody.parse(req.body ?? {});
+
+      if (hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+      if (user.role !== "author") {
+        return reply.code(403).send({ error: "forbidden" });
+      }
 
       const stores = await prismaAny.hotelVectorStore.findMany({ where: { hotelId } });
       if (!stores.length) {
@@ -690,13 +799,19 @@ export async function ragRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete("/rag/vector-stores/:id/files/:fileId", async (req: any, reply) => {
+  app.delete("/rag/vector-stores/:id/files/:fileId", { preHandler: app.authenticate }, async (req: any, reply) => {
     try {
+      const user = await getCurrentUser(req, reply);
+      if (!user) return;
       const { id, fileId } = req.params as { id: string; fileId: string };
       const { hotelId } = HotelScopedBody.parse(req.query ?? {});
 
-      const record = await loadVectorStoreForHotel(id, hotelId);
-      if (!record) return reply.code(404).send({ error: "vector_store_not_found" });
+      if (hotelId !== user.hotelId) {
+        return reply.code(403).send({ error: "hotel_mismatch" });
+      }
+
+      const record = await loadVectorStoreForAccess(id, user, reply);
+      if (!record) return;
 
       const client = await getHotelOpenAIClientOrError(hotelId, reply);
       if (!client) return;
