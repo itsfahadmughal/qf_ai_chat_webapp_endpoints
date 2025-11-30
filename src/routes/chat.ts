@@ -259,7 +259,9 @@ export async function chatRoutes(app: FastifyInstance) {
         ? prefs?.modelOpenAI
         : chosenProvider === "deepseek"
         ? prefs?.modelDeepseek
-        : prefs?.modelPerplexity;
+        : chosenProvider === "perplexity"
+        ? prefs?.modelPerplexity
+        : prefs?.modelClaude;
 
     const hotelDefault =
       toggles.find(t => (t.provider as ProviderName) === chosenProvider)?.defaultModel || undefined;
@@ -279,7 +281,9 @@ export async function chatRoutes(app: FastifyInstance) {
         ? process.env.OPENAI_MODEL
         : chosenProvider === "deepseek"
         ? process.env.DEEPSEEK_MODEL
-        : process.env.PERPLEXITY_MODEL) ||
+        : chosenProvider === "perplexity"
+        ? process.env.PERPLEXITY_MODEL
+        : process.env.CLAUDE_MODEL) ||
       "gpt-4o-mini";
 
     // 7) BYOK: load per-hotel credential (optional)

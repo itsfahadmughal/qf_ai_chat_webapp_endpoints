@@ -11,7 +11,8 @@ const UpdateSchema = z.object({
   models: z.object({
     openai: z.string().optional(),
     deepseek: z.string().optional(),
-    perplexity: z.string().optional()
+    perplexity: z.string().optional(),
+    claude: z.string().optional()
   }).optional(),
   locale: z.string().optional()
 });
@@ -42,7 +43,8 @@ export async function settingsRoutes(app: FastifyInstance) {
         models: {
           openai: prefs?.modelOpenAI ?? null,
           deepseek: prefs?.modelDeepseek ?? null,
-          perplexity: prefs?.modelPerplexity ?? null
+          perplexity: prefs?.modelPerplexity ?? null,
+          claude: prefs?.modelClaude ?? null
         },
         locale: prefs?.locale ?? null
       }
@@ -89,6 +91,7 @@ export async function settingsRoutes(app: FastifyInstance) {
         modelOpenAI: body.models?.openai,
         modelDeepseek: body.models?.deepseek,
         modelPerplexity: body.models?.perplexity,
+        modelClaude: body.models?.claude,
         locale: body.locale
       },
       create: {
@@ -98,6 +101,7 @@ export async function settingsRoutes(app: FastifyInstance) {
         modelOpenAI: body.models?.openai,
         modelDeepseek: body.models?.deepseek,
         modelPerplexity: body.models?.perplexity,
+        modelClaude: body.models?.claude,
         locale: body.locale
       }
     });

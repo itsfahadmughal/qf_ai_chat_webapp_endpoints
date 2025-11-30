@@ -248,6 +248,7 @@ model UserPreference {
   modelOpenAI     String?
   modelDeepseek   String?
   modelPerplexity String?
+  modelClaude     String?
 
   locale String?
 }
