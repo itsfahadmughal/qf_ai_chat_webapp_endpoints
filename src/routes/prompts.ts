@@ -199,7 +199,6 @@ export async function promptRoutes(app: FastifyInstance) {
   app.get("/prompts", { preHandler: app.authenticate }, async (req: any, reply) => {
     const { user } = await assertHotelAndProvider(req, reply);
     if (reply.sent) return;
-    const isAuthor = user.role === "author";
 
     const q = z.object({
       search: z.string().optional(),
@@ -207,38 +206,21 @@ export async function promptRoutes(app: FastifyInstance) {
       archived: z.coerce.boolean().optional()
     }).parse(req.query);
 
-    const where: any = {
-      hotelId: user.hotelId,
-      archived: q.archived ?? false,
-      categoryId: q.categoryId ?? undefined
-    };
-
-    const andFilters: any[] = [];
-    if (q.search) {
-      andFilters.push({
-        OR: [
-          { title: { contains: q.search, mode: "insensitive" } },
-          { body: { contains: q.search, mode: "insensitive" } },
-          { tags: { has: q.search } }
-        ]
-      });
-    }
-
-    if (!isAuthor) {
-      andFilters.push({
-        OR: [
-          { departmentId: user.departmentId ?? null },
-          { departmentId: null }
-        ]
-      });
-    }
-
-    if (andFilters.length) {
-      where.AND = andFilters;
-    }
-
     const prompts = await prismaAny.prompt.findMany({
-      where,
+      where: {
+        hotelId: user.hotelId,
+        archived: q.archived ?? false,
+        AND: q.search
+          ? [{
+              OR: [
+                { title: { contains: q.search, mode: "insensitive" } },
+                { body:  { contains: q.search, mode: "insensitive" } },
+                { tags:  { has: q.search } }
+              ]
+            }]
+          : undefined,
+        categoryId: q.categoryId ?? undefined
+      },
       orderBy: { updatedAt: "desc" },
       include: {
         author: { select: { id: true, email: true } },
@@ -305,7 +287,6 @@ export async function promptRoutes(app: FastifyInstance) {
     const { user } = await assertHotelAndProvider(req, reply);
     if (reply.sent) return;
     const { departmentId } = req.params as { departmentId: string };
-    const isAuthor = user.role === "author";
 
     const department = await prismaAny.department.findFirst({
       where: { id: departmentId, hotelId: user.hotelId },
@@ -313,9 +294,6 @@ export async function promptRoutes(app: FastifyInstance) {
     });
     if (!department) {
       return reply.code(404).send({ error: "department_not_found" });
-    }
-    if (!isAuthor && user.departmentId !== departmentId) {
-      return reply.code(403).send({ error: "department_forbidden" });
     }
 
     const promptRecords = (await prismaAny.prompt.findMany({
@@ -350,22 +328,9 @@ export async function promptRoutes(app: FastifyInstance) {
     const { user } = await assertHotelAndProvider(req, reply);
     if (reply.sent) return;
     const { categoryId } = req.params as { categoryId: string };
-    const isAuthor = user.role === "author";
 
     const prompts = await prismaAny.prompt.findMany({
-      where: {
-        hotelId: user.hotelId,
-        categoryId,
-        archived: false,
-        ...(isAuthor
-          ? {}
-          : {
-              OR: [
-                { departmentId: user.departmentId ?? null },
-                { departmentId: null }
-              ]
-            })
-      },
+      where: { hotelId: user.hotelId, categoryId, archived: false },
       orderBy: { updatedAt: "desc" },
       include: {
         author: { select: { id: true, email: true } },
