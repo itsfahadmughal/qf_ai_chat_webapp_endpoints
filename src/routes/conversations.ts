@@ -9,7 +9,7 @@ const MEMORY_MESSAGE_ROLE = "memory";
 const CreateConv = z.object({
   title: z.string().optional(),
   model: z.string().optional(),
-  provider: z.enum(["openai", "deepseek", "perplexity"]).optional(),
+  provider: z.enum(["openai", "deepseek", "perplexity", "claude"]).optional(),
   promptId: z.string().nullable().optional()
 });
 
@@ -51,6 +51,20 @@ export async function conversationRoutes(app: FastifyInstance) {
     scheduleFineTuneUpload(user.hotelId, req.log);
 
     return conv;
+  });
+
+  app.patch("/conversations/:id/title", { preHandler: app.authenticate }, async (req: any, reply: any) => {
+    const params = req.params as { id: string };
+    const { id } = params;
+    const Body = z.object({ title: z.string().min(1).max(120) }).parse(req.body ?? {});
+    const conv = await prisma.conversation.findFirst({ where: { id, userId: req.user.id }, select: { id: true } });
+    if (!conv) return reply.code(404).send({ error: "conversation_not_found" });
+
+    const updated = await prisma.conversation.update({
+      where: { id },
+      data: { title: Body.title }
+    });
+    return { ok: true, conversation: updated };
   });
 
   app.get("/conversations", { preHandler: app.authenticate }, async (req: any) => {
