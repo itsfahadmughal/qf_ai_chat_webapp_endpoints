@@ -4,6 +4,7 @@ import { prisma } from "../db.js";
 import { z } from "zod";
 
 const ProviderEnum = z.enum(["openai", "deepseek", "perplexity", "claude"]);
+const LanguageEnum = z.enum(["en", "de", "it"]);
 
 const UpdateSchema = z.object({
   enabledProviders: z.array(ProviderEnum).optional(),   // e.g. ["openai","deepseek"]
@@ -14,7 +15,7 @@ const UpdateSchema = z.object({
     perplexity: z.string().optional(),
     claude: z.string().optional()
   }).optional(),
-  locale: z.string().optional()
+  locale: LanguageEnum.optional()
 });
 
 export async function settingsRoutes(app: FastifyInstance) {
@@ -49,6 +50,38 @@ export async function settingsRoutes(app: FastifyInstance) {
         locale: prefs?.locale ?? null
       }
     };
+  });
+
+  app.get("/settings/language", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true }
+    });
+    if (!user) return reply.code(404).send({ error: "User not found" });
+
+    const prefs = await prisma.userPreference.findUnique({
+      where: { userId: user.id },
+      select: { locale: true }
+    });
+
+    return { locale: prefs?.locale ?? "en" };
+  });
+
+  app.put("/settings/language", { preHandler: app.authenticate }, async (req: any, reply) => {
+    const { locale } = z
+      .object({ locale: LanguageEnum.default("en") })
+      .parse(req.body ?? {});
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) return reply.code(404).send({ error: "User not found" });
+
+    const saved = await prisma.userPreference.upsert({
+      where: { userId: user.id },
+      update: { locale },
+      create: { userId: user.id, locale }
+    });
+
+    return { ok: true, locale: saved.locale ?? "en" };
   });
 
   // PUT: set which providers the user enables + default + per-provider model

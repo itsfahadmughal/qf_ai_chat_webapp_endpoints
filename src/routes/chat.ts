@@ -645,7 +645,9 @@ export async function chatRoutes(app: FastifyInstance) {
       await prisma.message.delete({ where: { id: memoryMessage.id } });
     }
 
-    const nextSuggestions = getPostReplySuggestions(result.content || "", "en", 3);
+    const suggestionLocale =
+      prefs?.locale && ["en", "de", "it"].includes(prefs.locale) ? (prefs.locale as "en" | "de" | "it") : "en";
+    const nextSuggestions = getPostReplySuggestions(result.content || "", suggestionLocale, 3);
 
     return {
       conversationId: conv.id,
