@@ -11,6 +11,7 @@ import {
   createUser,
   createConversationRecord,
   createMessageRecord,
+  createVectorStore,
   testState
 } from "./mockPrisma.js";
 
@@ -18,6 +19,13 @@ const mockChat = vi.fn(async () => ({
   content: "Mock assistant reply",
   usage: { total_tokens: 42 }
 }));
+const mockSearchVectorStore = vi.fn(async () => [
+  {
+    content: [{ text: { value: "Important hotel policy" } }],
+    score: 0.92
+  }
+]);
+const mockGetHotelOpenAIClient = vi.fn(async () => ({}));
 
 vi.mock("../../src/db.js", () => ({
   prisma: prismaMock
@@ -30,6 +38,10 @@ vi.mock("../../src/lib/training/examples.js", () => ({
 }));
 vi.mock("../../src/lib/training/vectorStore.js", () => ({
   syncTrainingExamplesToVectorStore: vi.fn().mockResolvedValue(null)
+}));
+vi.mock("../../src/lib/openai.js", () => ({
+  getHotelOpenAIClient: mockGetHotelOpenAIClient,
+  searchVectorStore: mockSearchVectorStore
 }));
 vi.mock("../../src/providers/index.js", () => ({
   Providers: {
@@ -66,6 +78,7 @@ describe("chat e2e", () => {
     app = await buildServer();
     userToken = app.jwt.sign({ id: user.id, email: user.email });
     mockChat.mockClear();
+    mockSearchVectorStore.mockClear();
   });
 
   afterEach(async () => {
@@ -150,5 +163,23 @@ describe("chat e2e", () => {
     expect(deleteRes.statusCode).toBe(200);
     expect(testState.conversations.find((c) => c.id === conversationId)).toBeUndefined();
     expect(testState.messages.some((m) => m.conversationId === conversationId)).toBe(false);
+  });
+
+  it("injects knowledge base context when enabled", async () => {
+    const store = createVectorStore({ hotelId, openaiId: "vs_123" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/chat",
+      headers: { authorization: `Bearer ${userToken}` },
+      payload: {
+        messages: [{ role: "user", content: "Where is breakfast served?" }],
+        knowledge: { enabled: true }
+      }
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.knowledge).toEqual({ vectorStoreId: store.id, chunkCount: 1 });
+    expect(mockSearchVectorStore).toHaveBeenCalled();
   });
 });
