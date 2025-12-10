@@ -48,7 +48,7 @@ const ChatBody = z.object({
 /** Adapt messages for a provider that doesn't accept role: "tool".
  *  We mapped "tool" -> "system" so OpenAI/Deepseek/Perplexity won't reject the payload.
  */
-function adaptMessagesForProvider(
+export function adaptMessagesForProvider(
   provider: ProviderName,
   msgs: Array<{ role: string; content: string }>
 ) {
@@ -128,7 +128,7 @@ function roleLabel(role: string) {
   }
 }
 
-function buildSummaryMessage(
+export function buildSummaryMessage(
   messages: Array<{ role: string; content: string }>
 ): string | null {
   if (!messages.length) return null;
